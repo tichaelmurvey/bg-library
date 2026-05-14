@@ -1,0 +1,44 @@
+{
+  "name": "bg-library",
+  "version": "0.1.0",
+  "description": "TypeScript primitives for board game simulation: decks, dice, hands, and a unified player/move interface.",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist",
+    "readme.md"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "biome check src",
+    "format": "biome format --write src"
+  },
+  "keywords": [
+    "board-game",
+    "simulation",
+    "deck",
+    "dice",
+    "cards",
+    "game-engine"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
+    "tsup": "^8.3.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  },
+  "packageManager": "pnpm@9.0.0"
+}
