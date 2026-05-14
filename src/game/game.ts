@@ -1,19 +1,18 @@
 import type { PlayerId } from "../hand/hand.js";
 import type { Rng } from "../rng/rng.js";
-import type { Move, PlayerView } from "./move.js";
+import type { MoveOffering, MoveResponse, PlayerView } from "./move.js";
 import type { GameResult } from "./player.js";
 
-export interface Game<TState, TView extends PlayerView, TMove extends Move> {
+export interface Game<TState, TView extends PlayerView> {
   initialState(playerIds: readonly PlayerId[], rng: Rng): TState;
   currentPlayer(state: TState): PlayerId;
   isTerminal(state: TState): boolean;
+  /** Valid only when `isTerminal(state)` is true. */
   result(state: TState): GameResult;
-  legalMoves(state: TState, playerId: PlayerId): readonly TMove[];
-  applyMove(state: TState, move: TMove, playerId: PlayerId): TState;
+  /** The set of moves the given player may make from the current state. */
+  moveOffering(state: TState, playerId: PlayerId): MoveOffering;
+  /** Apply a validated move. Should return a new state rather than mutate. */
+  applyMove(state: TState, move: MoveResponse, playerId: PlayerId): TState;
+  /** Player-specific projection of the state (hides opponents' secrets). */
   viewFor(state: TState, viewerId: PlayerId): TView;
-  /**
-   * Optional equality check used by the loop to verify the move a Player
-   * returned is one of the legal moves. Defaults to structural JSON equality.
-   */
-  movesEqual?(a: TMove, b: TMove): boolean;
 }

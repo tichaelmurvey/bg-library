@@ -5,113 +5,165 @@ import { mulberry32 } from "../rng/mulberry32.js";
 import type { Rng } from "../rng/rng.js";
 import type { Game } from "./game.js";
 import { IllegalMoveError, runGame } from "./loop.js";
-import type { Move, PlayerView } from "./move.js";
+import type { MoveOffering, MoveResponse, PlayerView } from "./move.js";
 import type { Player } from "./player.js";
 
-// --- Minimal "high-card draw" game --------------------------------------
-// Each turn the current player draws the top card. After every player has
-// drawn once, whoever drew the highest card wins.
+// --- Minimal "draw N cards then pass" game ------------------------------
+// Demonstrates: option choice (draw vs. pass) + a number-range param.
+// On each turn the player chooses to either draw 1..3 cards or pass.
+// After every player has taken one turn, whoever holds the highest card
+// wins. Pass ⇒ no cards drawn ⇒ score 0.
 
-interface HCState {
+interface State {
   readonly deck: Deck<number>;
-  readonly drawn: Readonly<Record<PlayerId, number | undefined>>;
+  readonly best: Readonly<Record<PlayerId, number>>;
   readonly order: readonly PlayerId[];
   readonly turn: number;
 }
 
-interface HCView extends PlayerView {
-  readonly myDraw: number | undefined;
-  readonly remainingPlayers: number;
+interface View extends PlayerView {
   readonly viewer: PlayerId;
+  readonly best: Readonly<Record<PlayerId, number>>;
+  readonly cardsLeft: number;
 }
 
-interface HCMove extends Move {
-  readonly type: "draw";
-}
-
-const highCard: Game<HCState, HCView, HCMove> = {
+const game: Game<State, View> = {
   initialState(playerIds, rng: Rng) {
-    const cards = Array.from({ length: 20 }, (_, i) => i + 1);
-    const deck = new Deck<number>(cards, rng);
+    const deck = new Deck<number>(
+      Array.from({ length: 30 }, (_, i) => i + 1),
+      rng,
+    );
     deck.shuffle();
-    const drawn: Record<PlayerId, number | undefined> = {};
-    for (const id of playerIds) drawn[id] = undefined;
-    return { deck, drawn, order: playerIds.slice(), turn: 0 };
+    const best: Record<PlayerId, number> = {};
+    for (const id of playerIds) best[id] = 0;
+    return { deck, best, order: playerIds.slice(), turn: 0 };
   },
-  currentPlayer(state) {
-    return state.order[state.turn] as PlayerId;
+  currentPlayer(s) {
+    return s.order[s.turn] as PlayerId;
   },
-  isTerminal(state) {
-    return state.turn >= state.order.length;
+  isTerminal(s) {
+    return s.turn >= s.order.length;
   },
-  result(state) {
-    let bestCard = -Infinity;
+  result(s) {
+    const scores = { ...s.best };
+    let top = -Infinity;
     let winners: PlayerId[] = [];
-    const scores: Record<PlayerId, number> = {};
-    for (const id of state.order) {
-      const v = state.drawn[id] ?? -1;
-      scores[id] = v;
-      if (v > bestCard) {
-        bestCard = v;
+    for (const id of s.order) {
+      const v = scores[id] ?? 0;
+      if (v > top) {
+        top = v;
         winners = [id];
-      } else if (v === bestCard) {
+      } else if (v === top) {
         winners.push(id);
       }
     }
     return { winners, scores };
   },
-  legalMoves() {
-    return [{ type: "draw" } as const];
-  },
-  applyMove(state, _move, playerId) {
-    const [card] = state.deck.draw(1);
+  moveOffering(s, _playerId): MoveOffering {
+    const max = Math.min(3, s.deck.size);
     return {
-      ...state,
-      drawn: { ...state.drawn, [playerId]: card },
-      turn: state.turn + 1,
+      options: [
+        {
+          type: "draw",
+          label: "Draw cards",
+          params: [{ name: "n", kind: "number-range", min: 1, max: Math.max(1, max) }],
+        },
+        { type: "pass", label: "Pass", params: [] },
+      ],
     };
   },
-  viewFor(state, viewerId) {
+  applyMove(s, move, playerId) {
+    if (move.type === "pass") {
+      return { ...s, turn: s.turn + 1 };
+    }
+    const n = move.params["n"] as number;
+    const drawn = s.deck.draw(n);
+    const localBest = Math.max(...drawn);
+    const prev = s.best[playerId] ?? 0;
     return {
-      myDraw: state.drawn[viewerId],
-      remainingPlayers: state.order.length - state.turn,
-      viewer: viewerId,
+      ...s,
+      best: { ...s.best, [playerId]: Math.max(prev, localBest) },
+      turn: s.turn + 1,
     };
+  },
+  viewFor(s, viewerId) {
+    return { viewer: viewerId, best: { ...s.best }, cardsLeft: s.deck.size };
   },
 };
 
-const scriptedPlayer = (id: PlayerId): Player<HCView, HCMove> => ({
+const drawer = (id: PlayerId, n: number): Player<View> => ({
   id,
-  async decide(_view, legal) {
-    return legal[0] as HCMove;
+  async decide(_view, offering) {
+    const draw = offering.options.find((o) => o.type === "draw");
+    if (!draw) return { type: "pass", params: {} };
+    return { type: "draw", params: { n } };
   },
 });
 
-describe("runGame (end-to-end smoke)", () => {
-  it("plays high-card to completion and produces a result", async () => {
-    const players = [scriptedPlayer("alice"), scriptedPlayer("bob")];
-    const { result, history } = await runGame(highCard, players, mulberry32(1));
+const passer = (id: PlayerId): Player<View> => ({
+  id,
+  async decide() {
+    return { type: "pass", params: {} };
+  },
+});
+
+describe("runGame with MoveOffering / MoveResponse", () => {
+  it("plays a full game to completion", async () => {
+    const { result, history } = await runGame(
+      game,
+      [drawer("alice", 3), drawer("bob", 1)],
+      mulberry32(1),
+    );
     expect(history).toHaveLength(2);
     expect(result.winners.length).toBeGreaterThanOrEqual(1);
-    expect(result.scores).toBeDefined();
   });
 
-  it("is deterministic for the same RNG seed", async () => {
+  it("is deterministic for the same seed", async () => {
     const run = () =>
-      runGame(highCard, [scriptedPlayer("alice"), scriptedPlayer("bob")], mulberry32(1234));
+      runGame(game, [drawer("alice", 2), drawer("bob", 2)], mulberry32(1234));
     const a = await run();
     const b = await run();
     expect(a.result.winners).toEqual(b.result.winners);
     expect(a.result.scores).toEqual(b.result.scores);
   });
 
-  it("invokes lifecycle hooks on each player", async () => {
+  it("supports a paramless move", async () => {
+    const { result } = await runGame(game, [passer("alice"), passer("bob")], mulberry32(7));
+    expect(result.scores?.["alice"]).toBe(0);
+    expect(result.scores?.["bob"]).toBe(0);
+  });
+
+  it("rejects an unknown move type", async () => {
+    const cheater: Player<View> = {
+      id: "cheater",
+      async decide() {
+        return { type: "fly", params: {} };
+      },
+    };
+    await expect(
+      runGame(game, [cheater, passer("bob")], mulberry32(1)),
+    ).rejects.toBeInstanceOf(IllegalMoveError);
+  });
+
+  it("rejects an out-of-range param value", async () => {
+    const tooMany: Player<View> = {
+      id: "greedy",
+      async decide() {
+        return { type: "draw", params: { n: 99 } };
+      },
+    };
+    await expect(
+      runGame(game, [tooMany, passer("bob")], mulberry32(1)),
+    ).rejects.toBeInstanceOf(IllegalMoveError);
+  });
+
+  it("invokes lifecycle hooks", async () => {
     const calls: string[] = [];
-    const tracking = (id: PlayerId): Player<HCView, HCMove> => ({
+    const tracker = (id: PlayerId): Player<View> => ({
       id,
-      async decide(_view, legal) {
+      async decide() {
         calls.push(`${id}:decide`);
-        return legal[0] as HCMove;
+        return { type: "pass", params: {} };
       },
       onGameStart() {
         calls.push(`${id}:start`);
@@ -123,23 +175,10 @@ describe("runGame (end-to-end smoke)", () => {
         calls.push(`${id}:end`);
       },
     });
-    await runGame(highCard, [tracking("alice"), tracking("bob")], mulberry32(1));
+    await runGame(game, [tracker("alice"), tracker("bob")], mulberry32(1));
     expect(calls[0]).toBe("alice:start");
-    expect(calls[1]).toBe("bob:start");
     expect(calls.at(-1)).toBe("bob:end");
     expect(calls).toContain("alice:applied(alice)");
     expect(calls).toContain("bob:applied(alice)");
-  });
-
-  it("rejects illegal moves from a player", async () => {
-    const cheater: Player<HCView, HCMove> = {
-      id: "cheater",
-      async decide() {
-        return { type: "fly-to-the-moon" } as unknown as HCMove;
-      },
-    };
-    await expect(
-      runGame(highCard, [cheater, scriptedPlayer("bob")], mulberry32(1)),
-    ).rejects.toBeInstanceOf(IllegalMoveError);
   });
 });

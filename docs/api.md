@@ -3,10 +3,15 @@
 All exports are available from the root: `import { Deck, Die, ... } from "bg-library"`.
 
 - [RNG](#rng)
+- [CardContainer](#cardcontainer)
+- [CardCollection](#cardcollection)
+- [Card](#card)
 - [Deck](#deck)
 - [Dice](#dice)
 - [Hand](#hand)
 - [Game](#game)
+- [GameConfig](#gameconfig)
+- [Prefabs](#prefabs)
 
 ---
 
@@ -45,14 +50,144 @@ rng.pick(["a","b"]); // "a" | "b"
 
 ---
 
+## CardContainer
+
+Source: [src/card-container/card-container.ts](../src/card-container/card-container.ts)
+
+The shared surface of any object that holds a collection of cards. Both [`Deck`](#deck) and [`Hand`](#hand) implement `CardContainer<TCard>`.
+
+```ts
+interface CardContainer<TCard> {
+  readonly size: number;
+  add(card: TCard | readonly TCard[]): void;
+  contains(predicate: (card: TCard) => boolean): boolean;
+  remove(predicate: (card: TCard) => boolean): TCard | undefined;
+  shuffle(): void;
+}
+```
+
+| Member | Description |
+| --- | --- |
+| `size` | Number of cards currently in the container's primary collection. |
+| `add(card \| cards)` | Add one or many cards. Insertion position is implementation-defined (see each class). |
+| `contains(predicate)` | True if any card matches the predicate. |
+| `remove(predicate)` | Remove and return the first matching card, or `undefined`. |
+| `shuffle()` | Randomize order using the container's own `Rng`. |
+
+Operations that are specific to one container — drawing, discarding, per-viewer visibility — live on the concrete classes, not on this interface.
+
+---
+
+## CardCollection
+
+Source: [src/card-container/card-collection.ts](../src/card-container/card-collection.ts)
+
+A shuffleable, mutable list of cards backed by an `Rng`. Used internally by both `Deck` and `Hand` so the shared mechanics — counting, predicate-based search and removal, shuffling, peeking from an end — live in one place. It is intentionally **position-explicit**: callers choose `addToEnd` vs. `addToStart` rather than the collection picking a default. The domain classes translate that into their own `add()` semantics.
+
+For this reason `CardCollection` does **not** implement [`CardContainer`](#cardcontainer) — it has no opinion about which end `add` should target. It is exposed as a public primitive so downstream code can build other card containers on top of it.
+
+### `class CardCollection<TCard>`
+
+```ts
+new CardCollection<TCard>(rng: Rng, initial?: readonly TCard[])
+```
+
+| Member | Description |
+| --- | --- |
+| `size` | Number of items. |
+| `snapshot(): TCard[]` | Defensive copy of all items in underlying order. |
+| `addToEnd(card \| cards)` | Append. |
+| `addToStart(card \| cards)` | Prepend. |
+| `contains(predicate)` | True if any item matches. |
+| `remove(predicate): TCard \| undefined` | Remove the first matching item. |
+| `shuffle()` | Randomize order using the collection's own `Rng`. |
+| `peekFromEnd(n): readonly TCard[]` | Non-mutating look at the last `n` items (capped at `size`). |
+| `takeFromEnd(n): TCard[]` | Remove and return the last `n` items in underlying order. Throws `RangeError` on underflow. |
+| `replace(items: readonly TCard[])` | Wholesale-substitute the items. |
+| `deal(containers, n)` | Distribute `n` cards to each container, round-robin from the end. See below. |
+
+### `deal(containers, n)`
+
+```ts
+deal(containers: readonly CardContainer<TCard>[], n: number): void
+```
+
+Distribute `n` cards to each of the given containers, round-robin from the **end** of this collection (the "top," matching deck conventions). Each container receives cards via its own `add()` method — so a `Deck` target receives cards on the bottom of its draw pile, while a `Hand` target appends them.
+
+Throws `RangeError` if:
+- `n` is negative or non-integer
+- `containers` is empty
+- there are fewer than `n × containers.length` cards available
+
+`n = 0` is a no-op.
+
+---
+
+## Card
+
+Source: [src/card/card.ts](../src/card/card.ts)
+
+A typed, introspectable card. `Card<TAttrs>` is `{ name, attrs }` — only `name` is library-required. Everything else lives in `attrs`, a keyed record of `CardAttribute`s. Each attribute carries its own `kind` discriminator so consumers can iterate, display, or compare attributes without external schema.
+
+The pattern parallels [MoveParam](#param-kinds): a discriminated union with a small set of value-bearing shapes.
+
+### `interface Card<TAttrs>`
+
+```ts
+interface Card<TAttrs extends CardAttrs = CardAttrs> {
+  readonly name: string;
+  readonly attrs: TAttrs;
+}
+
+type CardAttrs = Readonly<Record<string, CardAttribute>>;
+```
+
+Iterate uniformly with `Object.entries(card.attrs)`. Type-narrow concrete card shapes with `in` checks (e.g. `"rank" in card.attrs`).
+
+### `type CardAttribute`
+
+```ts
+type CardAttribute = IntegerAttribute | DiscreteAttribute;
+type AttributeKind = "integer" | "discrete";
+```
+
+| Kind | Shape | Notes |
+| --- | --- | --- |
+| `integer` | `{ kind: "integer"; value: number; min?: number; max?: number }` | Whole-number attribute (rank, cost, power). Bounds optional. |
+| `discrete` | `{ kind: "discrete"; value: T; options: readonly T[] }` | Pick-one-of. `T extends string` narrows the value to a literal union when options are known. |
+
+No runtime validation helper ships in v1 — cards are constructed in-process and trusted, unlike `MoveResponse` which comes from players. Add validation later if cards cross a serialization boundary.
+
+```ts
+import type { Card, IntegerAttribute, DiscreteAttribute } from "bg-library";
+
+type Suit = "spades" | "hearts" | "diamonds" | "clubs";
+type PlayingCard = Card<{
+  rank: IntegerAttribute;
+  suit: DiscreteAttribute<Suit>;
+}>;
+
+const aceOfSpades: PlayingCard = {
+  name: "Ace of Spades",
+  attrs: {
+    rank: { kind: "integer", value: 1, min: 1, max: 13 },
+    suit: { kind: "discrete", value: "spades", options: ["spades", "hearts", "diamonds", "clubs"] },
+  },
+};
+```
+
+---
+
 ## Deck
 
 Source: [src/deck/deck.ts](../src/deck/deck.ts)
 
+`Deck<TCard>` implements [`CardContainer<TCard>`](#cardcontainer). `contains` and `remove` operate on the draw pile only — the discard pile is queried with `discardSize` and managed via `discard` / `reshuffleDiscardIntoDeck`.
+
 ### `class Deck<TCard>`
 
 ```ts
-new Deck<TCard>(cards: readonly TCard[], rng: Rng)
+new Deck<TCard>(cards: readonly TCard[], rng: Rng, options?: DeckOptions)
 ```
 
 The last element of `cards` is the **top** of the deck (drawn first).
@@ -65,10 +200,58 @@ The last element of `cards` is the **top** of the deck (drawn first).
 | `draw(n = 1): TCard[]` | Draw `n` cards from the top. Throws `RangeError` on underflow. Top card is index 0 in the result. |
 | `tryDraw(n): TCard[]` | Like `draw`, but returns up to `n` instead of throwing. |
 | `peek(n = 1): readonly TCard[]` | Non-mutating look at the top `n` cards. |
+| `add(card \| cards)` | Add one or many cards to the **bottom** of the draw pile. Use `discard()` to send cards to the discard pile instead. |
+| `contains(predicate)` | True if any card in the draw pile matches. Does not search the discard pile. |
+| `remove(predicate)` | Remove and return the first matching card from the draw pile. Does not search the discard pile. |
 | `discard(card \| cards)` | Push one or many cards to the discard pile. |
 | `reshuffleDiscardIntoDeck()` | Move discard back onto the draw pile and shuffle. |
+| `deal(targets, n, strategy?)` | Distribute `n` cards round-robin to each target `CardContainer`. See below. |
 | `toJSON(): DeckSnapshot<TCard>` | Serialize current state. |
 | `static fromJSON(snap, rng): Deck` | Restore from snapshot. |
+
+### `interface DeckOptions`
+
+```ts
+interface DeckOptions {
+  readonly config?: { dealStrategy?: DealStrategy };
+}
+```
+
+`config` is held by reference and read fresh on every `deal()` call, so mutations made between calls (e.g. on a phase transition) are picked up immediately. The shape is structural — anything with an optional `dealStrategy` field works, and a [`GameConfig`](#gameconfig) is the canonical choice.
+
+### `deal(targets, n, strategy?)`
+
+```ts
+deal(
+  targets: readonly CardContainer<TCard>[],
+  n: number,
+  strategy?: DealStrategy,
+): void
+```
+
+Distribute `n` cards round-robin to each of the given targets, drawing from the **top** of the deck. Each target receives cards via its own `add()` method — so a `Hand` target appends, while a `Deck` target receives cards on the bottom of its draw pile.
+
+Underflow handling resolves in this order:
+
+1. The `strategy` argument, if given.
+2. `options.config.dealStrategy`, if set.
+3. `"exhaust"` (library default).
+
+Throws `RangeError` if `n` is negative or non-integer, if `targets` is empty, or if the resolved strategy cannot satisfy the request (see `DealStrategy` below).
+
+`n = 0` is a no-op.
+
+### `type DealStrategy`
+
+```ts
+type DealStrategy = "full-rounds" | "exhaust" | "reshuffle";
+```
+
+| Strategy | Behavior |
+| --- | --- |
+| `"full-rounds"` | Deal only complete rounds: `min(n, floor(size / targets.length))`. Leftovers stay in the deck. Never throws on underflow. |
+| `"exhaust"` | Deal round-robin until either `n` rounds are complete or the deck is empty. The final round may be partial. Never throws on underflow. |
+| `"reshuffle"` | Deal `n` full rounds, calling `reshuffleDiscardIntoDeck` whenever the draw pile is exhausted. Throws `RangeError` if both piles run dry before `n` rounds complete. |
 
 ### `interface DeckSnapshot<TCard>`
 
@@ -94,6 +277,7 @@ new Die<TFace>(faces: readonly TFace[], rng: Rng)
 | Member | Description |
 | --- | --- |
 | `roll(): TFace` | Roll the die and update `lastRoll`. |
+| `flip(): TFace` | Alias for `roll()`. Reads naturally on coins (`coin.flip()`); available on every `Die` for uniformity. |
 | `lastRoll: TFace \| undefined` | Result of the most recent roll. |
 | `faceCount: number` | Number of distinct face slots (duplicates allowed). |
 
@@ -104,8 +288,23 @@ Throws `RangeError` if constructed with zero faces.
 ```ts
 numericDie(sides: number, rng: Rng): Die<number>
 d4(rng), d6(rng), d8(rng), d10(rng), d12(rng), d20(rng)
+d100(rng): PercentileDice
 coin(rng): Die<"heads" | "tails">
 ```
+
+### `interface PercentileDice`
+
+```ts
+interface PercentileDice {
+  readonly tens: Die<number>;   // 1..10
+  readonly ones: Die<number>;   // 1..10
+  roll(): number;               // 1..100
+}
+```
+
+A percentile-pair d100 modelled as two d10s. `roll()` returns `(tens - 1) * 10 + ones`, producing `1..100` inclusive (so `tens = 1, ones = 1 → 1` and `tens = 10, ones = 10 → 100`).
+
+Rolling via `roll()` advances the shared `Rng` twice (tens then ones); rolling `tens` or `ones` directly advances it once.
 
 ### `class DicePool<TFace = number>`
 
@@ -132,16 +331,22 @@ Source: [src/hand/hand.ts](../src/hand/hand.ts)
 
 ### `class Hand<TCard>`
 
+`Hand<TCard>` implements [`CardContainer<TCard>`](#cardcontainer).
+
 ```ts
-new Hand<TCard>(ownerId: PlayerId, initial?: readonly TCard[])
+new Hand<TCard>(ownerId: PlayerId, rng: Rng, initial?: readonly TCard[])
 ```
+
+The `Rng` is required because `shuffle()` is part of the `CardContainer` contract. Most games never shuffle a hand, but constructing one with an `Rng` keeps the determinism invariant uniform across primitives.
 
 | Member | Description |
 | --- | --- |
 | `ownerId: PlayerId` | The player who owns (and can see) this hand. |
 | `size: number` | Number of cards held. |
 | `add(card \| cards)` | Add one or many cards. |
+| `contains(predicate)` | True if any card matches. |
 | `remove(predicate): TCard \| undefined` | Remove and return the first card matching `predicate`. |
+| `shuffle()` | Randomize the in-memory order of cards. Rarely needed in practice; provided for `CardContainer` uniformity. |
 | `viewFor(viewerId): HandView<TCard>` | Per-viewer projection — owner sees cards, others see count only. |
 | `reveal(): readonly TCard[]` | God-mode access for game logic. Bypasses visibility. |
 
@@ -163,29 +368,111 @@ interface HandView<TCard> {
 
 Source: [src/game/](../src/game/)
 
-The Player/Move/Game contract is the unified interface for human, scripted, and machine agents.
-
-### `type Move = Readonly<Record<string, unknown>>`
-
-Move shapes are defined by each game. The library only requires that moves are plain serializable objects so they can cross a network or be logged for replay.
+The Player/Move/Game contract is the unified interface for human, scripted, and machine agents. Instead of enumerating every legal move, a game presents a structured **offering** that describes the action space; the player picks an option and fills in typed params.
 
 ### `type PlayerView = Readonly<Record<string, unknown>>`
 
-Same idea for what a player sees on their turn — game-specific, but the library treats it as opaque.
+A player-specific projection of game state. Shape is defined by each game.
 
-### `interface Player<TView, TMove>`
+### Move offering
+
+A `MoveOffering` is what the game presents to a player on their turn. It has two layers: the list of available move types (`MoveOption`), and for each, the list of params the player must fill in (`MoveParam`).
 
 ```ts
-interface Player<TView extends PlayerView, TMove extends Move> {
+interface MoveOffering {
+  readonly options: readonly MoveOption[];
+}
+
+interface MoveOption {
+  readonly type: string;             // e.g. "draw", "play", "pass"
+  readonly label?: string;           // optional human display
+  readonly params: readonly MoveParam[];
+}
+```
+
+### Param kinds
+
+`MoveParam` is a discriminated union — `kind` selects the variant. Every variant carries a unique `name` within its option.
+
+```ts
+type ParamKind = "binary" | "number-range" | "named-options" | "string";
+
+interface BinaryParam {
+  readonly name: string;
+  readonly kind: "binary";
+  readonly trueLabel?: string;       // e.g. "forward"
+  readonly falseLabel?: string;      // e.g. "back"
+}
+
+interface NumberRangeParam {
+  readonly name: string;
+  readonly kind: "number-range";
+  readonly min: number;
+  readonly max: number;
+  readonly step?: number;            // defaults to 1
+}
+
+interface NamedOptionsParam {
+  readonly name: string;
+  readonly kind: "named-options";
+  readonly options: readonly string[]; // e.g. ["up", "down", "left", "right"]
+}
+
+interface StringParam {
+  readonly name: string;
+  readonly kind: "string";
+  readonly maxLength: number;
+  readonly minLength?: number;
+}
+```
+
+| Kind | Response value type | Constraints |
+| --- | --- | --- |
+| `binary` | `boolean` | None beyond type. Labels are display-only. |
+| `number-range` | `number` (finite) | `min ≤ value ≤ max`, aligned to `step` from `min`. |
+| `named-options` | `string` | Must be a member of `options`. |
+| `string` | `string` | `minLength ≤ length ≤ maxLength`. |
+
+`MoveParamValue = boolean | number | string` is the union of all response value types.
+
+### Move response
+
+A player's reply to an offering.
+
+```ts
+interface MoveResponse {
+  readonly type: string;             // must match one MoveOption.type
+  readonly params: Readonly<Record<string, MoveParamValue>>;
+}
+```
+
+The `params` record is keyed by `MoveParam.name`. Every param declared by the chosen option must be present; no extra keys are allowed.
+
+### `validateMoveResponse(offering, response): ValidationResult`
+
+Structural check that a response is well-formed against an offering. Returns:
+
+```ts
+type ValidationResult =
+  | { readonly ok: true }
+  | { readonly ok: false; readonly reason: string };
+```
+
+`runGame` calls this on every move and throws `IllegalMoveError` if it fails. Games may also call it directly when validating responses received from outside the loop (e.g. over the network).
+
+### `interface Player<TView>`
+
+```ts
+interface Player<TView extends PlayerView> {
   readonly id: PlayerId;
-  decide(view: TView, legalMoves: readonly TMove[]): Promise<TMove>;
+  decide(view: TView, offering: MoveOffering): Promise<MoveResponse>;
   onGameStart?(view: TView): void | Promise<void>;
-  onMoveApplied?(view: TView, move: TMove, byPlayer: PlayerId): void | Promise<void>;
+  onMoveApplied?(view: TView, move: MoveResponse, byPlayer: PlayerId): void | Promise<void>;
   onGameEnd?(view: TView, result: GameResult): void | Promise<void>;
 }
 ```
 
-`decide` is async to accommodate humans (waiting on UI), bots (sync), and networked/ML agents (HTTP). The returned move **must** be one of the entries in `legalMoves` — otherwise `runGame` throws `IllegalMoveError`.
+`decide` is async so the same contract fits humans (UI input), in-process bots, and remote/ML agents. The response is validated by the loop before being applied.
 
 ### `interface GameResult`
 
@@ -197,51 +484,186 @@ interface GameResult {
 }
 ```
 
-### `interface Game<TState, TView, TMove>`
+### `interface Game<TState, TView>`
 
 ```ts
-interface Game<TState, TView extends PlayerView, TMove extends Move> {
+interface Game<TState, TView extends PlayerView> {
   initialState(playerIds: readonly PlayerId[], rng: Rng): TState;
   currentPlayer(state: TState): PlayerId;
   isTerminal(state: TState): boolean;
-  result(state: TState): GameResult;             // valid only when isTerminal
-  legalMoves(state: TState, playerId: PlayerId): readonly TMove[];
-  applyMove(state: TState, move: TMove, playerId: PlayerId): TState;
+  result(state: TState): GameResult;                              // valid only when isTerminal
+  moveOffering(state: TState, playerId: PlayerId): MoveOffering;
+  applyMove(state: TState, move: MoveResponse, playerId: PlayerId): TState;
   viewFor(state: TState, viewerId: PlayerId): TView;
-  movesEqual?(a: TMove, b: TMove): boolean;      // defaults to JSON-string equality
 }
 ```
 
-`applyMove` should be pure-ish: prefer returning a new state rather than mutating the input. The loop carries the returned state forward.
+`applyMove` should return a new state rather than mutate the input. The loop carries the returned state forward.
 
-### `runGame(game, players, rng): Promise<GameRunResult>`
+### `runGame(game, players, rng): Promise<GameRunResult<TState>>`
 
 ```ts
-function runGame<TState, TView, TMove>(
-  game: Game<TState, TView, TMove>,
-  players: readonly Player<TView, TMove>[],
+function runGame<TState, TView extends PlayerView>(
+  game: Game<TState, TView>,
+  players: readonly Player<TView>[],
   rng: Rng,
-): Promise<GameRunResult<TState, TMove>>;
+): Promise<GameRunResult<TState>>;
 
-interface GameRunResult<TState, TMove> {
+interface GameRunResult<TState> {
   readonly result: GameResult;
   readonly finalState: TState;
-  readonly history: readonly { readonly playerId: PlayerId; readonly move: TMove }[];
+  readonly history: readonly { readonly playerId: PlayerId; readonly move: MoveResponse }[];
 }
 ```
 
 The loop:
 1. Calls `onGameStart` on every player.
-2. While `!isTerminal(state)`: gets the current player, asks them to `decide`, validates the move against `legalMoves` (via `movesEqual`), applies it, and notifies all players via `onMoveApplied`.
+2. While `!isTerminal(state)`: gets the current player, builds the offering, asks them to `decide`, validates the response with `validateMoveResponse`, applies it, and notifies every player via `onMoveApplied`.
 3. Calls `onGameEnd` and returns the final result.
 
 ### `class IllegalMoveError`
 
-Thrown when a player returns a move not in the legal move set.
+Thrown when a player's response fails validation.
 
 ```ts
 class IllegalMoveError extends Error {
   readonly playerId: PlayerId;
-  readonly move: Move;
+  readonly move: MoveResponse;
+  readonly reason: string;            // from ValidationResult
 }
+```
+
+---
+
+## GameConfig
+
+Source: [src/config/game-config.ts](../src/config/game-config.ts)
+
+Library-wide defaults for primitive behaviors. A single `GameConfig` object is constructed once and passed by reference to any primitive that accepts it. Primitives read it fresh on each call, so mutating fields here (e.g. on a phase transition inside `applyMove`) takes effect on the next call without re-wiring anything.
+
+```ts
+interface GameConfig {
+  dealStrategy?: DealStrategy;
+}
+```
+
+| Field | Used by | Default when unset |
+| --- | --- | --- |
+| `dealStrategy` | [`Deck.deal`](#dealtargets-n-strategy) | `"exhaust"` |
+
+### What belongs here vs. in `TState`
+
+`GameConfig` holds **defaults for primitives**: how a deck deals when it runs short, how a die rerolls, etc. It is *not* a place to put game state.
+
+| Lives in `GameConfig` (mutable, shared) | Lives in `TState` (immutable, threaded by `runGame`) |
+| --- | --- |
+| `dealStrategy` | scores, turn counter, phase enum |
+| future primitive-default fields | board layout, who holds what |
+
+Per-call arguments always win over `GameConfig`, which always wins over the library default. Phase transitions should *write* to the config (`config.dealStrategy = "reshuffle"`); they should never be *readable* from it as game state.
+
+### Example
+
+```ts
+import { Deck, mulberry32, type GameConfig } from "bg-library";
+
+const config: GameConfig = { dealStrategy: "full-rounds" };
+const deck = new Deck<number>([1, 2, 3, 4, 5, 6, 7], mulberry32(42), { config });
+
+deck.deal(hands, 3);              // full-rounds (from config)
+deck.deal(hands, 3, "exhaust");   // per-call override wins
+config.dealStrategy = "reshuffle";
+deck.deal(hands, 3);              // reshuffle (live mutation picked up)
+```
+
+---
+
+## Prefabs
+
+Source: [src/prefabs/](../src/prefabs/)
+
+Opinionated factories built on top of the primitives. Each prefab is a *thin* convenience layer — it constructs primitives with sensible defaults so callers can skip the boilerplate when building a simulation. Prefabs MUST NOT contain game-specific rules; only construction helpers.
+
+### `standardDiceSet(rng): StandardDiceSet`
+
+Source: [src/prefabs/standard-dice-set.ts](../src/prefabs/standard-dice-set.ts)
+
+```ts
+interface StandardDiceSet {
+  readonly d4: Die<number>;
+  readonly d6: Die<number>;
+  readonly d8: Die<number>;
+  readonly d10: Die<number>;
+  readonly d12: Die<number>;
+  readonly d20: Die<number>;
+  readonly d100: PercentileDice;
+}
+```
+
+The canonical tabletop set. All dice share the given `Rng`, so the *order* of rolls across the set determines the sequence (matching how `Deck` and `Hand` share an `Rng`). For independent streams per die, give each one a forked `Rng` and construct dice manually instead.
+
+```ts
+import { standardDiceSet, mulberry32 } from "bg-library";
+
+const dice = standardDiceSet(mulberry32(42));
+dice.d20.roll();    // 1..20
+dice.d100.roll();   // 1..100
+```
+
+### `standardPlayingDeck(rng, opts?): Deck<StandardPlayingCard>`
+
+Source: [src/prefabs/standard-playing-deck.ts](../src/prefabs/standard-playing-deck.ts)
+
+```ts
+function standardPlayingDeck(
+  rng: Rng,
+  opts?: { jokers?: boolean },
+): Deck<StandardPlayingCard>;
+```
+
+Builds a fresh 52-card deck (or 54 with `{ jokers: true }`). The returned deck is **not** pre-shuffled — call `deck.shuffle()` for randomized order. This matches the explicit-randomness convention used elsewhere in the library.
+
+The element type is a union over two `Card` shapes:
+
+```ts
+type StandardPlayingCard =
+  | Card<{
+      readonly rank: IntegerAttribute;            // value 1..13
+      readonly suit: DiscreteAttribute<Suit>;
+    }>
+  | Card<{
+      readonly joker: DiscreteAttribute<"red" | "black">;
+    }>;
+
+type Suit = "spades" | "hearts" | "diamonds" | "clubs";
+```
+
+Narrow with `"joker" in card.attrs`. The matching rank-name strings (`"Ace"`..`"King"`) are exported as the readonly tuple `RANK_NAMES`, indexed by `rank - 1`. `SUITS` and `JOKER_COLORS` are similarly exported.
+
+```ts
+import { standardPlayingDeck, RANK_NAMES, mulberry32 } from "bg-library";
+
+const deck = standardPlayingDeck(mulberry32(1), { jokers: true });
+deck.shuffle();
+deck.size;  // 54
+
+const card = deck.draw(1)[0];
+if ("joker" in card.attrs) {
+  card.attrs.joker.value;   // "red" | "black"
+} else {
+  card.attrs.rank.value;    // 1..13
+  card.attrs.suit.value;    // "spades" | ...
+  card.name;                // e.g. "Queen of hearts"
+}
+```
+
+### Coin
+
+The existing `coin(rng): Die<"heads" | "tails">` factory is the "flippable coin" prefab. With `Die.flip()` available as an alias for `roll()`, the natural verb reads as expected:
+
+```ts
+import { coin, mulberry32 } from "bg-library";
+
+const c = coin(mulberry32(1));
+c.flip();   // "heads" | "tails"
 ```

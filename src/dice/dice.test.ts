@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { mulberry32 } from "../rng/mulberry32.js";
 import { DicePool } from "./dice-pool.js";
-import { Die, coin, d6, numericDie } from "./die.js";
+import { Die, coin, d6, d100, numericDie } from "./die.js";
 
 describe("Die", () => {
   it("rolls within face set", () => {
@@ -41,6 +41,65 @@ describe("Die", () => {
   it("numericDie rejects invalid side counts", () => {
     expect(() => numericDie(0, mulberry32(1))).toThrow(RangeError);
     expect(() => numericDie(2.5, mulberry32(1))).toThrow(RangeError);
+  });
+
+  it("flip() is an alias for roll() and is deterministic for the same seed", () => {
+    const a = coin(mulberry32(9));
+    const b = coin(mulberry32(9));
+    const rolled = Array.from({ length: 20 }, () => a.roll());
+    const flipped = Array.from({ length: 20 }, () => b.flip());
+    expect(flipped).toEqual(rolled);
+  });
+
+  it("flip() updates lastRoll", () => {
+    const c = coin(mulberry32(1));
+    const v = c.flip();
+    expect(c.lastRoll).toBe(v);
+  });
+});
+
+describe("d100", () => {
+  it("rolls within 1..100", () => {
+    const pair = d100(mulberry32(1));
+    for (let i = 0; i < 200; i++) {
+      const v = pair.roll();
+      expect(v).toBeGreaterThanOrEqual(1);
+      expect(v).toBeLessThanOrEqual(100);
+      expect(Number.isInteger(v)).toBe(true);
+    }
+  });
+
+  it("exposes tens and ones individually, each in 1..10", () => {
+    const pair = d100(mulberry32(2));
+    for (let i = 0; i < 50; i++) {
+      const t = pair.tens.roll();
+      const o = pair.ones.roll();
+      expect(t).toBeGreaterThanOrEqual(1);
+      expect(t).toBeLessThanOrEqual(10);
+      expect(o).toBeGreaterThanOrEqual(1);
+      expect(o).toBeLessThanOrEqual(10);
+    }
+  });
+
+  it("is deterministic given the same RNG seed", () => {
+    const a = d100(mulberry32(123));
+    const b = d100(mulberry32(123));
+    const ra = Array.from({ length: 30 }, () => a.roll());
+    const rb = Array.from({ length: 30 }, () => b.roll());
+    expect(ra).toEqual(rb);
+  });
+
+  it("can produce both endpoints of 1 and 100", () => {
+    // Combined value is (tens - 1) * 10 + ones, so:
+    //   tens=1, ones=1  → 1
+    //   tens=10, ones=10 → 100
+    // Sample heavily and ensure the full range is reachable.
+    const pair = d100(mulberry32(7));
+    const seen = new Set<number>();
+    for (let i = 0; i < 10000; i++) seen.add(pair.roll());
+    expect(seen.size).toBeGreaterThan(50);
+    expect(Math.min(...seen)).toBeGreaterThanOrEqual(1);
+    expect(Math.max(...seen)).toBeLessThanOrEqual(100);
   });
 });
 

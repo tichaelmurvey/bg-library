@@ -1,37 +1,37 @@
 import type { PlayerId } from "../hand/hand.js";
 import type { Rng } from "../rng/rng.js";
 import type { Game } from "./game.js";
-import type { Move, PlayerView } from "./move.js";
+import type { MoveResponse, PlayerView } from "./move.js";
+import { validateMoveResponse } from "./move.js";
 import type { GameResult, Player } from "./player.js";
 
-export interface GameRunResult<TState, TMove> {
+export interface GameRunResult<TState> {
   readonly result: GameResult;
   readonly finalState: TState;
-  readonly history: readonly { readonly playerId: PlayerId; readonly move: TMove }[];
+  readonly history: readonly { readonly playerId: PlayerId; readonly move: MoveResponse }[];
 }
 
 export class IllegalMoveError extends Error {
   constructor(
     readonly playerId: PlayerId,
-    readonly move: Move,
+    readonly move: MoveResponse,
+    readonly reason: string,
   ) {
-    super(`Player "${playerId}" returned an illegal move: ${JSON.stringify(move)}`);
+    super(`Player "${playerId}" returned an illegal move (${reason}): ${JSON.stringify(move)}`);
     this.name = "IllegalMoveError";
   }
 }
 
-const defaultEquals = (a: Move, b: Move): boolean => JSON.stringify(a) === JSON.stringify(b);
-
-export async function runGame<TState, TView extends PlayerView, TMove extends Move>(
-  game: Game<TState, TView, TMove>,
-  players: readonly Player<TView, TMove>[],
+export async function runGame<TState, TView extends PlayerView>(
+  game: Game<TState, TView>,
+  players: readonly Player<TView>[],
   rng: Rng,
-): Promise<GameRunResult<TState, TMove>> {
+): Promise<GameRunResult<TState>> {
   if (players.length === 0) {
     throw new Error("runGame requires at least one player");
   }
 
-  const playersById = new Map<PlayerId, Player<TView, TMove>>();
+  const playersById = new Map<PlayerId, Player<TView>>();
   for (const p of players) {
     if (playersById.has(p.id)) {
       throw new Error(`Duplicate player id: "${p.id}"`);
@@ -41,8 +41,7 @@ export async function runGame<TState, TView extends PlayerView, TMove extends Mo
 
   const playerIds = players.map((p) => p.id);
   let state = game.initialState(playerIds, rng);
-  const movesEqual = game.movesEqual ?? defaultEquals;
-  const history: { playerId: PlayerId; move: TMove }[] = [];
+  const history: { playerId: PlayerId; move: MoveResponse }[] = [];
 
   for (const p of players) {
     await p.onGameStart?.(game.viewFor(state, p.id));
@@ -56,14 +55,15 @@ export async function runGame<TState, TView extends PlayerView, TMove extends Mo
     }
 
     const view = game.viewFor(state, currentId);
-    const legal = game.legalMoves(state, currentId);
-    if (legal.length === 0) {
-      throw new Error(`No legal moves available for player "${currentId}"`);
+    const offering = game.moveOffering(state, currentId);
+    if (offering.options.length === 0) {
+      throw new Error(`No move options offered to player "${currentId}"`);
     }
 
-    const chosen = await player.decide(view, legal);
-    if (!legal.some((m) => movesEqual(m, chosen))) {
-      throw new IllegalMoveError(currentId, chosen);
+    const chosen = await player.decide(view, offering);
+    const check = validateMoveResponse(offering, chosen);
+    if (!check.ok) {
+      throw new IllegalMoveError(currentId, chosen, check.reason);
     }
 
     state = game.applyMove(state, chosen, currentId);

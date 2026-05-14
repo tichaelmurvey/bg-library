@@ -19,6 +19,11 @@ export class Die<TFace = number> {
     return face;
   }
 
+  /** Alias for `roll()`. Reads naturally on coins (`coin.flip()`). */
+  flip(): TFace {
+    return this.roll();
+  }
+
   get lastRoll(): TFace | undefined {
     return this._lastRoll;
   }
@@ -44,3 +49,31 @@ export const d12 = (rng: Rng): Die<number> => numericDie(12, rng);
 export const d20 = (rng: Rng): Die<number> => numericDie(20, rng);
 export const coin = (rng: Rng): Die<"heads" | "tails"> =>
   new Die<"heads" | "tails">(["heads", "tails"], rng);
+
+/**
+ * A percentile-pair d100: two d10s exposed individually, plus a `roll()`
+ * that produces a single value in `1..100` via `(tens - 1) * 10 + ones`.
+ *
+ * Rolling the pair via `roll()` advances the shared `Rng` twice (tens
+ * first, then ones); rolling `tens` or `ones` directly advances it once.
+ */
+export interface PercentileDice {
+  readonly tens: Die<number>;
+  readonly ones: Die<number>;
+  /** Roll both dice and return the combined value in `1..100`. */
+  roll(): number;
+}
+
+export function d100(rng: Rng): PercentileDice {
+  const tens = numericDie(10, rng);
+  const ones = numericDie(10, rng);
+  return {
+    tens,
+    ones,
+    roll(): number {
+      const t = tens.roll();
+      const o = ones.roll();
+      return (t - 1) * 10 + o;
+    },
+  };
+}
