@@ -25,6 +25,8 @@ export const RANK_NAMES = [
 export const JOKER_COLORS = ["red", "black"] as const;
 export type JokerColor = (typeof JOKER_COLORS)[number];
 
+export type RankName = (typeof RANK_NAMES)[number];
+
 /** Attribute shape for the 52 standard cards. */
 export type StandardCardAttrs = {
   readonly rank: IntegerAttribute;
@@ -37,32 +39,59 @@ export type JokerAttrs = {
 };
 
 /**
- * Either a suited card (`{ rank, suit }`) or a joker (`{ joker }`).
- * Narrow with `"joker" in card.attrs`.
+ * Convenience methods present on every card in a `standardPlayingDeck`.
+ * On suited cards they return the rank value and its name; on jokers
+ * both return `undefined`.
  */
-export type StandardPlayingCard = Card<StandardCardAttrs> | Card<JokerAttrs>;
+export interface PlayingCardOps {
+  rankOf(): number | undefined;
+  rankNameOf(): RankName | undefined;
+}
+
+/**
+ * Either a suited card (`{ rank, suit }`) or a joker (`{ joker }`).
+ * Narrow with `"joker" in card.attrs`. Every card also carries the
+ * `rankOf` / `rankNameOf` accessors from `PlayingCardOps`.
+ */
+export type StandardPlayingCard =
+  | (Card<StandardCardAttrs> & PlayingCardOps)
+  | (Card<JokerAttrs> & PlayingCardOps);
 
 export interface StandardPlayingDeckOptions {
   /** Append two distinguishable jokers (red, black). Defaults to `false`. */
   readonly jokers?: boolean;
 }
 
-function suitedCard(suit: Suit, rank: number): Card<StandardCardAttrs> {
+/**
+ * Look up the integer rank (1..13) for a rank name like "Ace" or "King".
+ * Returns `undefined` for unrecognized names.
+ */
+export function rankFromName(name: string): number | undefined {
+  const idx = RANK_NAMES.indexOf(name as RankName);
+  return idx >= 0 ? idx + 1 : undefined;
+}
+
+function suitedCard(suit: Suit, rank: number): Card<StandardCardAttrs> & PlayingCardOps {
+  const rankName = RANK_NAMES[rank - 1] as RankName;
   return {
-    name: `${RANK_NAMES[rank - 1]} of ${suit}`,
+    name: `${rankName} of ${suit}`,
     attrs: {
       rank: { kind: "integer", value: rank, min: 1, max: 13 },
       suit: { kind: "discrete", value: suit, options: SUITS },
     },
+    rankOf: () => rank,
+    rankNameOf: () => rankName,
   };
 }
 
-function jokerCard(color: JokerColor): Card<JokerAttrs> {
+function jokerCard(color: JokerColor): Card<JokerAttrs> & PlayingCardOps {
   return {
     name: `${color === "red" ? "Red" : "Black"} Joker`,
     attrs: {
       joker: { kind: "discrete", value: color, options: JOKER_COLORS },
     },
+    rankOf: () => undefined,
+    rankNameOf: () => undefined,
   };
 }
 

@@ -1,10 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type {
-  Card,
-  CardAttribute,
-  DiscreteAttribute,
-  IntegerAttribute,
-} from "./card.js";
+import type { Card, CardAttribute, DiscreteAttribute, IntegerAttribute } from "./card.js";
 
 describe("Card", () => {
   it("constructs a typed card with named attributes", () => {

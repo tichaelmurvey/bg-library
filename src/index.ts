@@ -5,6 +5,8 @@ export type { CardContainer } from "./card-container/card-container.js";
 export { CardCollection } from "./card-container/card-collection.js";
 
 export type {
+  AttrKey,
+  AttrValue,
   AttributeKind,
   Card,
   CardAttribute,
@@ -29,11 +31,14 @@ export {
   JOKER_COLORS,
   RANK_NAMES,
   SUITS,
+  rankFromName,
   standardPlayingDeck,
 } from "./prefabs/standard-playing-deck.js";
 export type {
   JokerAttrs,
   JokerColor,
+  PlayingCardOps,
+  RankName,
   StandardCardAttrs,
   StandardPlayingCard,
   StandardPlayingDeckOptions,

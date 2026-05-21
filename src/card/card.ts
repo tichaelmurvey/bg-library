@@ -49,3 +49,28 @@ export interface Card<TAttrs extends CardAttrs = CardAttrs> {
   readonly name: string;
   readonly attrs: TAttrs;
 }
+
+/**
+ * The union of attribute names available on cards of type `TCard`.
+ * Distributes over unions, so for a discriminated card union it yields
+ * every key that appears on at least one branch.
+ *
+ * For non-`Card` element types (e.g. `Deck<number>`), this is `never` —
+ * which makes attribute-keyed methods like `CardContainer.count`
+ * unreachable at the call site.
+ */
+export type AttrKey<TCard> = TCard extends Card<infer A> ? Extract<keyof A, string> : never;
+
+/**
+ * The `value` type for a specific attribute name on cards of type
+ * `TCard`. Distributes over unions: branches that don't carry the key
+ * contribute `never`, so the resulting union is the union of value
+ * types actually produced by that key.
+ */
+export type AttrValue<TCard, K extends string> = TCard extends Card<infer A>
+  ? K extends keyof A
+    ? A[K] extends { readonly value: infer V }
+      ? V
+      : never
+    : never
+  : never;

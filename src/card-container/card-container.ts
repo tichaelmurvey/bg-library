@@ -1,3 +1,5 @@
+import type { AttrKey, AttrValue } from "../card/card.js";
+
 /**
  * The shared surface of any object that holds a collection of cards —
  * currently `Deck` and `Hand`. The interface covers the operations that
@@ -15,4 +17,23 @@ export interface CardContainer<TCard> {
   remove(predicate: (card: TCard) => boolean): TCard | undefined;
   /** Randomize internal order using the container's own `Rng`. */
   shuffle(): void;
+  /**
+   * Group held cards by the value of a named attribute and return the
+   * resulting `Map<value, count>`. Cards that don't carry the field
+   * (e.g. jokers when counting `"rank"`) are skipped.
+   *
+   * The field name and the map's key type are derived from `TCard` via
+   * `AttrKey` / `AttrValue` — so on a `Deck<number>` this method is
+   * unreachable at the call site (no valid field), while on a deck of
+   * `StandardPlayingCard` it offers `"rank" | "suit" | "joker"`.
+   */
+  count<K extends AttrKey<TCard>>(field: K): Map<AttrValue<TCard, K>, number>;
+  /**
+   * Distinct values present in the container for the given attribute,
+   * in first-seen iteration order. Cards missing the field are skipped.
+   *
+   * `valuesOf(field)` is equivalent to `[...count(field).keys()]` but
+   * skips the intermediate `Map`.
+   */
+  valuesOf<K extends AttrKey<TCard>>(field: K): AttrValue<TCard, K>[];
 }

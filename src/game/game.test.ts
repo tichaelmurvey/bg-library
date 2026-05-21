@@ -46,7 +46,7 @@ const game: Game<State, View> = {
   },
   result(s) {
     const scores = { ...s.best };
-    let top = -Infinity;
+    let top = Number.NEGATIVE_INFINITY;
     let winners: PlayerId[] = [];
     for (const id of s.order) {
       const v = scores[id] ?? 0;
@@ -76,7 +76,7 @@ const game: Game<State, View> = {
     if (move.type === "pass") {
       return { ...s, turn: s.turn + 1 };
     }
-    const n = move.params["n"] as number;
+    const n = move.params.n as number;
     const drawn = s.deck.draw(n);
     const localBest = Math.max(...drawn);
     const prev = s.best[playerId] ?? 0;
@@ -119,8 +119,7 @@ describe("runGame with MoveOffering / MoveResponse", () => {
   });
 
   it("is deterministic for the same seed", async () => {
-    const run = () =>
-      runGame(game, [drawer("alice", 2), drawer("bob", 2)], mulberry32(1234));
+    const run = () => runGame(game, [drawer("alice", 2), drawer("bob", 2)], mulberry32(1234));
     const a = await run();
     const b = await run();
     expect(a.result.winners).toEqual(b.result.winners);
@@ -129,8 +128,8 @@ describe("runGame with MoveOffering / MoveResponse", () => {
 
   it("supports a paramless move", async () => {
     const { result } = await runGame(game, [passer("alice"), passer("bob")], mulberry32(7));
-    expect(result.scores?.["alice"]).toBe(0);
-    expect(result.scores?.["bob"]).toBe(0);
+    expect(result.scores?.alice).toBe(0);
+    expect(result.scores?.bob).toBe(0);
   });
 
   it("rejects an unknown move type", async () => {
@@ -140,9 +139,9 @@ describe("runGame with MoveOffering / MoveResponse", () => {
         return { type: "fly", params: {} };
       },
     };
-    await expect(
-      runGame(game, [cheater, passer("bob")], mulberry32(1)),
-    ).rejects.toBeInstanceOf(IllegalMoveError);
+    await expect(runGame(game, [cheater, passer("bob")], mulberry32(1))).rejects.toBeInstanceOf(
+      IllegalMoveError,
+    );
   });
 
   it("rejects an out-of-range param value", async () => {
@@ -152,9 +151,9 @@ describe("runGame with MoveOffering / MoveResponse", () => {
         return { type: "draw", params: { n: 99 } };
       },
     };
-    await expect(
-      runGame(game, [tooMany, passer("bob")], mulberry32(1)),
-    ).rejects.toBeInstanceOf(IllegalMoveError);
+    await expect(runGame(game, [tooMany, passer("bob")], mulberry32(1))).rejects.toBeInstanceOf(
+      IllegalMoveError,
+    );
   });
 
   it("invokes lifecycle hooks", async () => {

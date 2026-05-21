@@ -63,6 +63,7 @@ interface CardContainer<TCard> {
   contains(predicate: (card: TCard) => boolean): boolean;
   remove(predicate: (card: TCard) => boolean): TCard | undefined;
   shuffle(): void;
+  count<K extends AttrKey<TCard>>(field: K): Map<AttrValue<TCard, K>, number>;
 }
 ```
 
@@ -73,6 +74,14 @@ interface CardContainer<TCard> {
 | `contains(predicate)` | True if any card matches the predicate. |
 | `remove(predicate)` | Remove and return the first matching card, or `undefined`. |
 | `shuffle()` | Randomize order using the container's own `Rng`. |
+| `count(field)` | Group held cards by the value of a named `Card` attribute and return a `Map<value, count>`. Cards missing the field (e.g. jokers when counting `"rank"`) are skipped. Field name and value type are derived from `TCard` via [`AttrKey` / `AttrValue`](#card); the method is unreachable on containers whose `TCard` isn't a `Card` (e.g. `Deck<number>`). |
+
+```ts
+const hand = new Hand<StandardPlayingCard>("alice", rng);
+hand.add(deck.draw(7));
+hand.count("rank");   // Map<number, number> — e.g. { 3 => 2, 7 => 1, 11 => 4 }
+hand.count("suit");   // Map<Suit, number>
+```
 
 Operations that are specific to one container — drawing, discarding, per-viewer visibility — live on the concrete classes, not on this interface.
 
@@ -158,6 +167,18 @@ type AttributeKind = "integer" | "discrete";
 
 No runtime validation helper ships in v1 — cards are constructed in-process and trusted, unlike `MoveResponse` which comes from players. Add validation later if cards cross a serialization boundary.
 
+### Type helpers: `AttrKey<TCard>` and `AttrValue<TCard, K>`
+
+```ts
+type AttrKey<TCard>   = TCard extends Card<infer A> ? Extract<keyof A, string> : never;
+type AttrValue<TCard, K extends string> =
+  TCard extends Card<infer A>
+    ? K extends keyof A ? (A[K] extends { value: infer V } ? V : never) : never
+    : never;
+```
+
+These distribute over unions, so a discriminated card union (`Card<X> | Card<Y>`) yields `AttrKey = keyof X | keyof Y` and `AttrValue<K>` is the union of value types across the branches that actually carry `K`. The `CardContainer.count` method uses both to type its argument and return value.
+
 ```ts
 import type { Card, IntegerAttribute, DiscreteAttribute } from "bg-library";
 
@@ -182,42 +203,51 @@ const aceOfSpades: PlayingCard = {
 
 Source: [src/deck/deck.ts](../src/deck/deck.ts)
 
-`Deck<TCard>` implements [`CardContainer<TCard>`](#cardcontainer). `contains` and `remove` operate on the draw pile only — the discard pile is queried with `discardSize` and managed via `discard` / `reshuffleDiscardIntoDeck`.
+`Deck<TCard>` implements [`CardContainer<TCard>`](#cardcontainer). `contains` and `remove` operate on the draw pile only.
+
+A discard pile is **another `Deck`**, linked by reference. Decks carry a stable `id` so paired decks can be re-linked after `toJSON` / `fromJSON`. Cards move between decks explicitly — e.g. `discard.add(main.draw(3))`.
 
 ### `class Deck<TCard>`
 
 ```ts
-new Deck<TCard>(cards: readonly TCard[], rng: Rng, options?: DeckOptions)
+new Deck<TCard>(cards: readonly TCard[], rng: Rng, options?: DeckOptions<TCard>)
 ```
 
 The last element of `cards` is the **top** of the deck (drawn first).
 
 | Member | Description |
 | --- | --- |
+| `id: string` | Stable identifier. Auto-generated via `crypto.randomUUID()` when not supplied through `DeckOptions`. |
 | `size` | Cards remaining in the draw pile. |
-| `discardSize` | Cards in the discard pile. |
+| `discardPile: Deck<TCard> \| undefined` | The linked discard pile, if any. Read-only getter. |
+| `setDiscardPile(other \| undefined)` | Link a discard pile, or pass `undefined` to clear the link. |
 | `shuffle()` | Shuffle the draw pile in place using the deck's `Rng`. |
 | `draw(n = 1): TCard[]` | Draw `n` cards from the top. Throws `RangeError` on underflow. Top card is index 0 in the result. |
 | `tryDraw(n): TCard[]` | Like `draw`, but returns up to `n` instead of throwing. |
 | `peek(n = 1): readonly TCard[]` | Non-mutating look at the top `n` cards. |
-| `add(card \| cards)` | Add one or many cards to the **bottom** of the draw pile. Use `discard()` to send cards to the discard pile instead. |
+| `add(card \| cards)` | Add one or many cards to the **bottom** of the draw pile. To send cards to the discard pile, call `add()` on the linked discard `Deck` directly. |
 | `contains(predicate)` | True if any card in the draw pile matches. Does not search the discard pile. |
 | `remove(predicate)` | Remove and return the first matching card from the draw pile. Does not search the discard pile. |
-| `discard(card \| cards)` | Push one or many cards to the discard pile. |
-| `reshuffleDiscardIntoDeck()` | Move discard back onto the draw pile and shuffle. |
+| `reshuffleDiscardIntoDeck()` | Drain the linked discard pile back into this deck and shuffle. `console.warn` and no-op if no discard pile is linked; silent no-op if the linked pile is empty. |
 | `deal(targets, n, strategy?)` | Distribute `n` cards round-robin to each target `CardContainer`. See below. |
-| `toJSON(): DeckSnapshot<TCard>` | Serialize current state. |
-| `static fromJSON(snap, rng): Deck` | Restore from snapshot. |
+| `toJSON(): DeckSnapshot<TCard>` | Serialize current state (includes `id` and, when a discard pile is linked, `discardPileId`). |
+| `static fromJSON(snap, rng): Deck` | Restore from snapshot. Discard-pile link is **not** auto-restored — callers re-link using the snapshot's `discardPileId`. |
 
-### `interface DeckOptions`
+### `interface DeckOptions<TCard>`
 
 ```ts
-interface DeckOptions {
+interface DeckOptions<TCard = unknown> {
+  readonly id?: string;
+  readonly discardPile?: Deck<TCard>;
   readonly config?: { dealStrategy?: DealStrategy };
 }
 ```
 
-`config` is held by reference and read fresh on every `deal()` call, so mutations made between calls (e.g. on a phase transition) are picked up immediately. The shape is structural — anything with an optional `dealStrategy` field works, and a [`GameConfig`](#gameconfig) is the canonical choice.
+| Field | Notes |
+| --- | --- |
+| `id` | Stable identifier for serialization linkage. Auto-generated via `crypto.randomUUID()` when omitted. |
+| `discardPile` | Discard pile linked at construction. Equivalent to calling `setDiscardPile` immediately afterwards. |
+| `config` | Held by reference and read fresh on every `deal()` call, so mutations made between calls (e.g. on a phase transition) are picked up immediately. The shape is structural — anything with an optional `dealStrategy` field works, and a [`GameConfig`](#gameconfig) is the canonical choice. |
 
 ### `deal(targets, n, strategy?)`
 
@@ -251,14 +281,28 @@ type DealStrategy = "full-rounds" | "exhaust" | "reshuffle";
 | --- | --- |
 | `"full-rounds"` | Deal only complete rounds: `min(n, floor(size / targets.length))`. Leftovers stay in the deck. Never throws on underflow. |
 | `"exhaust"` | Deal round-robin until either `n` rounds are complete or the deck is empty. The final round may be partial. Never throws on underflow. |
-| `"reshuffle"` | Deal `n` full rounds, calling `reshuffleDiscardIntoDeck` whenever the draw pile is exhausted. Throws `RangeError` if both piles run dry before `n` rounds complete. |
+| `"reshuffle"` | Deal `n` full rounds, draining the linked discard pile back into this deck whenever the draw pile is exhausted. Throws `RangeError` if there is no linked discard pile, or if both piles run dry before `n` rounds complete. |
 
 ### `interface DeckSnapshot<TCard>`
 
 ```ts
 interface DeckSnapshot<TCard> {
+  readonly id: string;
   readonly draw: readonly TCard[];
-  readonly discard: readonly TCard[];
+  readonly discardPileId?: string;
+}
+```
+
+`discardPileId` carries the id of the linked discard deck at snapshot time. `fromJSON` restores the deck and its id but does not re-link the discard pile — the caller looks up the matching deck (e.g. by id in a registry of restored decks) and calls `setDiscardPile`.
+
+```ts
+// Linked main / discard, round-trip pattern:
+const restored = new Map<string, Deck<Card>>();
+for (const snap of snapshots) restored.set(snap.id, Deck.fromJSON(snap, rng));
+for (const snap of snapshots) {
+  if (snap.discardPileId) {
+    restored.get(snap.id)?.setDiscardPile(restored.get(snap.discardPileId));
+  }
 }
 ```
 
@@ -623,22 +667,30 @@ function standardPlayingDeck(
 
 Builds a fresh 52-card deck (or 54 with `{ jokers: true }`). The returned deck is **not** pre-shuffled — call `deck.shuffle()` for randomized order. This matches the explicit-randomness convention used elsewhere in the library.
 
-The element type is a union over two `Card` shapes:
+The element type is a union over two `Card` shapes, each intersected with `PlayingCardOps`:
 
 ```ts
 type StandardPlayingCard =
-  | Card<{
+  | (Card<{
       readonly rank: IntegerAttribute;            // value 1..13
       readonly suit: DiscreteAttribute<Suit>;
-    }>
-  | Card<{
+    }> & PlayingCardOps)
+  | (Card<{
       readonly joker: DiscreteAttribute<"red" | "black">;
-    }>;
+    }> & PlayingCardOps);
+
+interface PlayingCardOps {
+  rankOf(): number | undefined;     // 1..13 for suited cards, undefined for jokers
+  rankNameOf(): RankName | undefined; // "Ace".."King" for suited, undefined for jokers
+}
 
 type Suit = "spades" | "hearts" | "diamonds" | "clubs";
+type RankName = "Ace" | "Two" | ... | "King";
 ```
 
-Narrow with `"joker" in card.attrs`. The matching rank-name strings (`"Ace"`..`"King"`) are exported as the readonly tuple `RANK_NAMES`, indexed by `rank - 1`. `SUITS` and `JOKER_COLORS` are similarly exported.
+Narrow the union with `"joker" in card.attrs`. The matching rank-name strings (`"Ace"`..`"King"`) are exported as the readonly tuple `RANK_NAMES`, indexed by `rank - 1`. `SUITS` and `JOKER_COLORS` are similarly exported.
+
+The `rankOf` / `rankNameOf` accessors are convenience methods present on every card in the deck so callers don't need to write the `"joker" in attrs` guard each time they want a rank. They are closure-bound at construction; this means cards do not survive a `JSON.stringify` round-trip unmodified — rebuild them through `standardPlayingDeck` (or re-attach the methods) after deserialization.
 
 ```ts
 import { standardPlayingDeck, RANK_NAMES, mulberry32 } from "bg-library";
@@ -648,6 +700,8 @@ deck.shuffle();
 deck.size;  // 54
 
 const card = deck.draw(1)[0];
+card.rankOf();      // 1..13, or undefined for a joker
+card.rankNameOf();  // "Ace".."King", or undefined for a joker
 if ("joker" in card.attrs) {
   card.attrs.joker.value;   // "red" | "black"
 } else {

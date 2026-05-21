@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { Card, DiscreteAttribute, IntegerAttribute } from "../card/card.js";
 import { mulberry32 } from "../rng/mulberry32.js";
 import { Hand } from "./hand.js";
 
@@ -77,5 +78,65 @@ describe("Hand", () => {
     const view = h.viewFor("alice");
     (view.cards as number[]).push(99);
     expect(h.size).toBe(2);
+  });
+
+  describe("count", () => {
+    type Color = "red" | "blue" | "green";
+    type ColoredAttrs = {
+      readonly rank: IntegerAttribute;
+      readonly color: DiscreteAttribute<Color>;
+    };
+    type ColoredCard = Card<ColoredAttrs>;
+    const card = (rank: number, color: Color): ColoredCard => ({
+      name: `${color}-${rank}`,
+      attrs: {
+        rank: { kind: "integer", value: rank },
+        color: { kind: "discrete", value: color, options: ["red", "blue", "green"] },
+      },
+    });
+
+    it("groups by an integer attribute", () => {
+      const h = new Hand<ColoredCard>("alice", mulberry32(1), [
+        card(3, "red"),
+        card(3, "blue"),
+        card(5, "red"),
+      ]);
+      const byRank = h.count("rank");
+      expect(byRank.get(3)).toBe(2);
+      expect(byRank.get(5)).toBe(1);
+      expect(byRank.size).toBe(2);
+    });
+
+    it("groups by a discrete attribute", () => {
+      const h = new Hand<ColoredCard>("alice", mulberry32(1), [
+        card(3, "red"),
+        card(3, "blue"),
+        card(5, "red"),
+      ]);
+      const byColor = h.count("color");
+      expect(byColor.get("red")).toBe(2);
+      expect(byColor.get("blue")).toBe(1);
+      expect(byColor.get("green")).toBeUndefined();
+    });
+
+    it("returns an empty map when the hand is empty", () => {
+      const h = new Hand<ColoredCard>("alice", mulberry32(1));
+      expect(h.count("rank").size).toBe(0);
+    });
+
+    it("skips cards whose union branch lacks the requested field", () => {
+      type EitherCard =
+        | Card<{ readonly rank: IntegerAttribute }>
+        | Card<{ readonly color: DiscreteAttribute<Color> }>;
+      const ranked: EitherCard = { name: "r3", attrs: { rank: { kind: "integer", value: 3 } } };
+      const colored: EitherCard = {
+        name: "red",
+        attrs: { color: { kind: "discrete", value: "red", options: ["red", "blue", "green"] } },
+      };
+      const h = new Hand<EitherCard>("alice", mulberry32(1), [ranked, colored, ranked]);
+      const byRank = h.count("rank");
+      expect(byRank.get(3)).toBe(2);
+      expect(byRank.size).toBe(1);
+    });
   });
 });

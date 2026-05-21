@@ -1,6 +1,15 @@
 import type { Rng } from "../rng/rng.js";
 import type { CardContainer } from "./card-container.js";
 
+function readAttrValue(card: unknown, field: string): unknown {
+  if (typeof card !== "object" || card === null) return undefined;
+  const attrs = (card as { attrs?: unknown }).attrs;
+  if (typeof attrs !== "object" || attrs === null) return undefined;
+  const attr = (attrs as Record<string, unknown>)[field];
+  if (typeof attr !== "object" || attr === null) return undefined;
+  return (attr as { value?: unknown }).value;
+}
+
 /**
  * A shuffleable, mutable collection of cards backed by an `Rng`.
  *
@@ -85,9 +94,7 @@ export class CardCollection<TCard> {
       throw new RangeError(`takeFromEnd(n) requires a non-negative integer, got ${n}`);
     }
     if (n > this.items.length) {
-      throw new RangeError(
-        `Cannot take ${n} items: only ${this.items.length} present`,
-      );
+      throw new RangeError(`Cannot take ${n} items: only ${this.items.length} present`);
     }
     return this.items.splice(this.items.length - n, n);
   }
@@ -95,6 +102,38 @@ export class CardCollection<TCard> {
   /** Replace all items wholesale. */
   replace(items: readonly TCard[]): void {
     this.items = items.slice();
+  }
+
+  /**
+   * Group items by the `value` of a named attribute on each card and
+   * return a `Map<value, count>`. Items missing the field are skipped.
+   * Untyped — callers should access this through the strongly-typed
+   * `CardContainer.count` on `Deck` / `Hand` rather than calling it
+   * directly.
+   */
+  countByAttr(field: string): Map<unknown, number> {
+    const counts = new Map<unknown, number>();
+    for (const item of this.items) {
+      const value = readAttrValue(item, field);
+      if (value === undefined) continue;
+      counts.set(value, (counts.get(value) ?? 0) + 1);
+    }
+    return counts;
+  }
+
+  /**
+   * Distinct attribute values present in the collection, in first-seen
+   * order. Items missing the field are skipped. Untyped — see
+   * `CardContainer.valuesOf` for the typed surface.
+   */
+  valuesOfAttr(field: string): unknown[] {
+    const seen = new Set<unknown>();
+    for (const item of this.items) {
+      const value = readAttrValue(item, field);
+      if (value === undefined) continue;
+      seen.add(value);
+    }
+    return [...seen];
   }
 
   /**

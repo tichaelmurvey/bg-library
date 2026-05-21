@@ -31,6 +31,7 @@ All three of `typecheck`, `test`, `build` must pass before claiming a change is 
 3. **Move validation is the loop's job.** `runGame` checks the returned move against `Game.legalMoves` and throws `IllegalMoveError` on a mismatch. Never bypass this check.
 4. **Per-viewer state projection.** Secret information is hidden via `Hand.viewFor(viewerId)` and `Game.viewFor(state, viewerId)`. Never pass full game state to a player; always go through `viewFor`.
 5. **Game-agnostic library.** No specific games or game-rule helpers live in `src/`. Don't drift toward implementing card games or rulesets here — that's downstream.
+6. **Prefabs are construction helpers only.** Anything under `src/prefabs/` MUST be a thin opinionated factory built on the primitives (e.g. `standardPlayingDeck`, `standardDiceSet`). No game-specific rules, no scoring, no win conditions — those belong downstream.
 
 ## Documentation — maintenance protocol
 
@@ -81,10 +82,14 @@ If a user asks for "more documentation," default to expanding `docs/api.md` or `
 src/
   index.ts            # public barrel — source of truth for the API surface
   rng/                # Rng interface + mulberry32
+  card/               # Card<TAttrs> + CardAttribute discriminated union
+  card-container/     # CardContainer interface + CardCollection
+  config/             # GameConfig (primitive-default bag)
   deck/               # Deck<TCard>
-  dice/               # Die, DicePool, factories
+  dice/               # Die, DicePool, factories (incl. d100 / PercentileDice)
   hand/               # Hand with per-viewer visibility
   game/               # Player, Move, Game, runGame, IllegalMoveError
+  prefabs/            # opinionated factories built on primitives
 docs/api.md           # full API reference
 readme.md             # overview + quick start
 ```

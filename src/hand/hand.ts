@@ -1,5 +1,6 @@
 import { CardCollection } from "../card-container/card-collection.js";
 import type { CardContainer } from "../card-container/card-container.js";
+import type { AttrKey, AttrValue } from "../card/card.js";
 import type { Rng } from "../rng/rng.js";
 
 export type PlayerId = string;
@@ -39,6 +40,22 @@ export class Hand<TCard> implements CardContainer<TCard> {
 
   shuffle(): void {
     this.cards.shuffle();
+  }
+
+  /**
+   * Group held cards by the value of a named attribute and return a
+   * `Map<value, count>`. Cards missing the field are skipped.
+   */
+  count<K extends AttrKey<TCard>>(field: K): Map<AttrValue<TCard, K>, number> {
+    return this.cards.countByAttr(field) as Map<AttrValue<TCard, K>, number>;
+  }
+
+  /**
+   * Distinct attribute values present in the hand, in first-seen order.
+   * Cards missing the field are skipped.
+   */
+  valuesOf<K extends AttrKey<TCard>>(field: K): AttrValue<TCard, K>[] {
+    return this.cards.valuesOfAttr(field) as AttrValue<TCard, K>[];
   }
 
   viewFor(viewerId: PlayerId): HandView<TCard> {
