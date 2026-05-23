@@ -1,6 +1,8 @@
 import { CardCollection } from "../card-container/card-collection.js";
 import type { CardContainer } from "../card-container/card-container.js";
 import type { AttrKey, AttrValue } from "../card/card.js";
+import type { PlayerView } from "../game/move.js";
+import type { Player } from "../game/player.js";
 import type { Rng } from "../rng/rng.js";
 
 export type PlayerId = string;
@@ -11,15 +13,38 @@ export interface HandView<TCard> {
   readonly cards: readonly TCard[] | undefined;
 }
 
+/** Construction-time options for a `Hand`. */
+export interface HandOptions {
+  /** Owning player, if known at construction. Also settable via `hand.player = ...`. */
+  readonly player?: Player<PlayerView>;
+  /**
+   * If `true` (default), only the owning player sees the cards via
+   * `viewFor`; other viewers see only the count. If `false`, all viewers
+   * see the cards.
+   */
+  readonly isPrivate?: boolean;
+}
+
 export class Hand<TCard> implements CardContainer<TCard> {
   private readonly cards: CardCollection<TCard>;
+  /**
+   * Owning player reference. Mutable so the game's `initialState` can
+   * wire up cross-links (`hand.player = p; p.hand = hand;`) after both
+   * sides exist.
+   */
+  player: Player<PlayerView> | undefined;
+  /** True if non-owners see only the card count via `viewFor`. */
+  readonly isPrivate: boolean;
 
   constructor(
     readonly ownerId: PlayerId,
     rng: Rng,
     initial: readonly TCard[] = [],
+    options: HandOptions = {},
   ) {
     this.cards = new CardCollection<TCard>(rng, initial);
+    this.player = options.player;
+    this.isPrivate = options.isPrivate ?? true;
   }
 
   get size(): number {
@@ -59,11 +84,11 @@ export class Hand<TCard> implements CardContainer<TCard> {
   }
 
   viewFor(viewerId: PlayerId): HandView<TCard> {
-    const isOwner = viewerId === this.ownerId;
+    const visible = !this.isPrivate || viewerId === this.ownerId;
     return {
       ownerId: this.ownerId,
       count: this.cards.size,
-      cards: isOwner ? this.cards.snapshot() : undefined,
+      cards: visible ? this.cards.snapshot() : undefined,
     };
   }
 

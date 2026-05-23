@@ -46,21 +46,29 @@ export type {
 } from "./prefabs/standard-playing-deck.js";
 
 export { Hand } from "./hand/hand.js";
-export type { HandView, PlayerId } from "./hand/hand.js";
+export type { HandOptions, HandView, PlayerId } from "./hand/hand.js";
 
 export type {
+  AppliedMove,
   BinaryParam,
+  GameMove,
+  Move,
+  MoveContext,
   MoveOffering,
   MoveOption,
   MoveParam,
   MoveParamValue,
   MoveResponse,
+  MoveResult,
   NamedOptionsParam,
   NumberRangeParam,
   ParamKind,
   ParamValueFor,
+  PlayerMove,
+  PlayerMoveOffer,
   PlayerView,
   StringParam,
+  TriggeredMove,
   ValidationResult,
 } from "./game/move.js";
 export { validateMoveResponse } from "./game/move.js";
@@ -68,3 +76,5 @@ export type { GameResult, Player } from "./game/player.js";
 export type { Game } from "./game/game.js";
 export { IllegalMoveError, runGame } from "./game/loop.js";
 export type { GameRunResult } from "./game/loop.js";
+
+export { randomBot } from "./players/random/random.js";

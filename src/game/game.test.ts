@@ -5,14 +5,14 @@ import { mulberry32 } from "../rng/mulberry32.js";
 import type { Rng } from "../rng/rng.js";
 import type { Game } from "./game.js";
 import { IllegalMoveError, runGame } from "./loop.js";
-import type { MoveOffering, MoveResponse, PlayerView } from "./move.js";
+import type { GameMove, Move, PlayerMove, PlayerView } from "./move.js";
 import type { Player } from "./player.js";
 
 // --- Minimal "draw N cards then pass" game ------------------------------
-// Demonstrates: option choice (draw vs. pass) + a number-range param.
-// On each turn the player chooses to either draw 1..3 cards or pass.
-// After every player has taken one turn, whoever holds the highest card
-// wins. Pass ⇒ no cards drawn ⇒ score 0.
+// Demonstrates: two player moves (`draw`, `pass`), a `record-score` game
+// move triggered by `draw` to fold the result back into state, and the
+// new `Game.moves` shape. After every player has taken one turn,
+// whoever holds the highest card wins. Pass ⇒ no cards drawn ⇒ score 0.
 
 interface State {
   readonly deck: Deck<number>;
@@ -27,17 +27,66 @@ interface View extends PlayerView {
   readonly cardsLeft: number;
 }
 
+const drawMove: PlayerMove<State> = {
+  kind: "player",
+  type: "draw",
+  offer(s) {
+    if (s.deck.size === 0) return null;
+    const max = Math.min(3, s.deck.size);
+    return {
+      label: "Draw cards",
+      params: [{ name: "n", kind: "number-range", min: 1, max: Math.max(1, max) }],
+    };
+  },
+  apply(s, params, ctx) {
+    const n = params.n as number;
+    const drawn = s.deck.draw(n);
+    const localBest = Math.max(...drawn);
+    return {
+      state: { ...s, turn: s.turn + 1 },
+      triggers: [
+        { type: "record-score", params: { playerId: ctx.actingPlayerId, score: localBest } },
+      ],
+    };
+  },
+};
+
+const passMove: PlayerMove<State> = {
+  kind: "player",
+  type: "pass",
+  offer() {
+    return { label: "Pass", params: [] };
+  },
+  apply(s) {
+    return { state: { ...s, turn: s.turn + 1 } };
+  },
+};
+
+const recordScoreMove: GameMove<State> = {
+  kind: "game",
+  type: "record-score",
+  apply(s, params) {
+    const playerId = params.playerId as PlayerId;
+    const score = params.score as number;
+    const prev = s.best[playerId] ?? 0;
+    return {
+      state: { ...s, best: { ...s.best, [playerId]: Math.max(prev, score) } },
+    };
+  },
+};
+
 const game: Game<State, View> = {
-  initialState(playerIds, rng: Rng) {
+  initialState(players, rng: Rng) {
     const deck = new Deck<number>(
       Array.from({ length: 30 }, (_, i) => i + 1),
       rng,
     );
     deck.shuffle();
     const best: Record<PlayerId, number> = {};
-    for (const id of playerIds) best[id] = 0;
-    return { deck, best, order: playerIds.slice(), turn: 0 };
+    for (const p of players) best[p.id] = 0;
+    return { deck, best, order: players.map((p) => p.id), turn: 0 };
   },
+  moves: [drawMove, passMove, recordScoreMove] satisfies Move<State>[],
   currentPlayer(s) {
     return s.order[s.turn] as PlayerId;
   },
@@ -58,33 +107,6 @@ const game: Game<State, View> = {
       }
     }
     return { winners, scores };
-  },
-  moveOffering(s, _playerId): MoveOffering {
-    const max = Math.min(3, s.deck.size);
-    return {
-      options: [
-        {
-          type: "draw",
-          label: "Draw cards",
-          params: [{ name: "n", kind: "number-range", min: 1, max: Math.max(1, max) }],
-        },
-        { type: "pass", label: "Pass", params: [] },
-      ],
-    };
-  },
-  applyMove(s, move, playerId) {
-    if (move.type === "pass") {
-      return { ...s, turn: s.turn + 1 };
-    }
-    const n = move.params.n as number;
-    const drawn = s.deck.draw(n);
-    const localBest = Math.max(...drawn);
-    const prev = s.best[playerId] ?? 0;
-    return {
-      ...s,
-      best: { ...s.best, [playerId]: Math.max(prev, localBest) },
-      turn: s.turn + 1,
-    };
   },
   viewFor(s, viewerId) {
     return { viewer: viewerId, best: { ...s.best }, cardsLeft: s.deck.size };
@@ -107,14 +129,17 @@ const passer = (id: PlayerId): Player<View> => ({
   },
 });
 
-describe("runGame with MoveOffering / MoveResponse", () => {
+describe("runGame with Move catalog", () => {
   it("plays a full game to completion", async () => {
     const { result, history } = await runGame(
       game,
       [drawer("alice", 3), drawer("bob", 1)],
       mulberry32(1),
     );
-    expect(history).toHaveLength(2);
+    // 2 player moves + 2 triggered `record-score` moves
+    expect(history).toHaveLength(4);
+    expect(history.filter((m) => m.triggeredBy === undefined)).toHaveLength(2);
+    expect(history.filter((m) => m.triggeredBy === "draw")).toHaveLength(2);
     expect(result.winners.length).toBeGreaterThanOrEqual(1);
   });
 
@@ -156,19 +181,20 @@ describe("runGame with MoveOffering / MoveResponse", () => {
     );
   });
 
-  it("invokes lifecycle hooks", async () => {
+  it("invokes lifecycle hooks and fires onMoveApplied for triggered moves too", async () => {
     const calls: string[] = [];
     const tracker = (id: PlayerId): Player<View> => ({
       id,
       async decide() {
         calls.push(`${id}:decide`);
-        return { type: "pass", params: {} };
+        return { type: "draw", params: { n: 1 } };
       },
       onGameStart() {
         calls.push(`${id}:start`);
       },
-      onMoveApplied(_v, _m, by) {
-        calls.push(`${id}:applied(${by})`);
+      onMoveApplied(_v, applied) {
+        const tag = applied.triggeredBy ? `triggered:${applied.type}` : applied.type;
+        calls.push(`${id}:applied(${tag} by ${applied.playerId})`);
       },
       onGameEnd() {
         calls.push(`${id}:end`);
@@ -177,7 +203,10 @@ describe("runGame with MoveOffering / MoveResponse", () => {
     await runGame(game, [tracker("alice"), tracker("bob")], mulberry32(1));
     expect(calls[0]).toBe("alice:start");
     expect(calls.at(-1)).toBe("bob:end");
-    expect(calls).toContain("alice:applied(alice)");
-    expect(calls).toContain("bob:applied(alice)");
+    // Both the player's `draw` and the triggered `record-score` fire.
+    expect(calls).toContain("alice:applied(draw by alice)");
+    expect(calls).toContain("alice:applied(triggered:record-score by alice)");
+    expect(calls).toContain("bob:applied(draw by alice)");
+    expect(calls).toContain("bob:applied(triggered:record-score by alice)");
   });
 });

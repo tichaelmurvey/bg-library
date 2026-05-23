@@ -89,6 +89,7 @@ src/
   dice/               # Die, DicePool, factories (incl. d100 / PercentileDice)
   hand/               # Hand with per-viewer visibility
   game/               # Player, Move, Game, runGame, IllegalMoveError
+  players/            # reusable Player implementations (e.g. random bot)
   prefabs/            # opinionated factories built on primitives
 docs/api.md           # full API reference
 readme.md             # overview + quick start

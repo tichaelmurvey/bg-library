@@ -198,3 +198,129 @@ function validateParamValue(param: MoveParam, value: MoveParamValue): Validation
 
 /** A player-specific projection of game state. Game-defined shape. */
 export type PlayerView = Readonly<Record<string, unknown>>;
+
+// --- Move definitions ---------------------------------------------------
+//
+// A game's rules are described by a list of `Move`s rather than by hand-
+// written `moveOffering` / `applyMove` switches. There are two kinds:
+//
+//   - **PlayerMove**: a move a player can choose on their turn. It owns
+//     both its offering (the per-state `offer()` callback that returns
+//     the option's params or `null` if currently unavailable) and its
+//     reducer (`apply()`).
+//   - **GameMove**: a move the engine runs in response to a trigger,
+//     never offered to players. Useful for follow-up steps like "draw
+//     from stock", "commit any books", "advance turn".
+//
+// Either kind's `apply` returns a `MoveResult` carrying the next state
+// and an optional list of triggered moves. Triggered moves are looked
+// up by `type` and processed depth-first before the loop yields back to
+// the next player turn.
+
+import type { PlayerId } from "../hand/hand.js";
+import type { Rng } from "../rng/rng.js";
+
+/** A reference to another move plus the params it should receive. */
+export interface TriggeredMove {
+  readonly type: string;
+  readonly params?: Readonly<Record<string, MoveParamValue>>;
+}
+
+/** Return shape for every `Move.apply`. */
+export interface MoveResult<TState> {
+  readonly state: TState;
+  /** Moves to run after this one, depth-first. Looked up by `type`. */
+  readonly triggers?: readonly TriggeredMove[];
+}
+
+/** Context passed to every `apply`. */
+export interface MoveContext {
+  /** The player whose turn produced this move (or the chain it belongs to). */
+  readonly actingPlayerId: PlayerId;
+  /** The move type that triggered this one. Undefined for the player's chosen move. */
+  readonly triggeredBy?: string;
+  readonly rng: Rng;
+  /**
+   * Force the enclosing `player_turn_sequence` to advance to the next
+   * player after the current chain settles. Without this call, the
+   * sequence's default is: re-prompt the same player as long as they
+   * still have offerable moves, otherwise advance.
+   */
+  advanceTurn(): void;
+}
+
+/** What a `PlayerMove.offer` returns when the move is currently legal. */
+export interface PlayerMoveOffer {
+  readonly label?: string;
+  readonly params: readonly MoveParam[];
+}
+
+export interface PlayerMove<TState> {
+  readonly kind: "player";
+  readonly type: string;
+  /**
+   * Build this move's option for the offering given the current state and
+   * the player on turn. Return `null` if the move is not currently legal —
+   * it will be omitted from the offering.
+   */
+  offer(state: TState, playerId: PlayerId): PlayerMoveOffer | null;
+  /**
+   * Apply the move with the params the player chose. Return the new state
+   * and any follow-up `triggers`.
+   */
+  apply(
+    state: TState,
+    params: Readonly<Record<string, MoveParamValue>>,
+    ctx: MoveContext,
+  ): MoveResult<TState>;
+}
+
+export interface GameMove<TState> {
+  readonly kind: "game";
+  readonly type: string;
+  /** Apply this triggered move with the params the trigger supplied. */
+  apply(
+    state: TState,
+    params: Readonly<Record<string, MoveParamValue>>,
+    ctx: MoveContext,
+  ): MoveResult<TState>;
+}
+
+export type Move<TState> = PlayerMove<TState> | GameMove<TState>;
+
+/** A move recorded in `GameRunResult.history` — player or triggered. */
+export interface AppliedMove {
+  readonly type: string;
+  readonly params: Readonly<Record<string, MoveParamValue>>;
+  /** Who was on turn when this move was applied. */
+  readonly playerId: PlayerId;
+  /** For game-triggered moves: the move type that triggered this one. Absent on the player-chosen move. */
+  readonly triggeredBy?: string;
+}
+
+// --- Game sequence ------------------------------------------------------
+//
+// A `Game.gameSequence` is a list of high-level phases the engine runs in
+// order. Each phase is a tagged `SequenceNode`. The only node type today
+// is `player_turn_sequence` — additional types (setup, scoring, etc.)
+// can be added without breaking the schema.
+
+/**
+ * A phase that iterates players round-robin. For each player the engine
+ * offers every player-move in `moves`; the player picks one; that move's
+ * `apply` runs and its triggers chain depth-first. After the chain
+ * settles the engine re-tries the same player — they keep the turn as
+ * long as at least one player-move still returns a non-null offer.
+ * Advance to the next player happens when either:
+ *   - the current player has no offerable moves left, or
+ *   - some move in the chain called `ctx.advanceTurn()`.
+ *
+ * The phase exits when every player has been skipped consecutively
+ * (no one can move) or when `Game.isTerminal` returns true.
+ */
+export interface PlayerTurnSequence<TState> {
+  readonly type: "player_turn_sequence";
+  readonly moves: readonly Move<TState>[];
+}
+
+export type SequenceNode<TState> = PlayerTurnSequence<TState>;

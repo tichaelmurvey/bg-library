@@ -68,6 +68,36 @@ describe("Hand", () => {
     expect(view.cards).toBeUndefined();
   });
 
+  it("isPrivate defaults to true", () => {
+    const h = makeHand<number>([1, 2]);
+    expect(h.isPrivate).toBe(true);
+  });
+
+  it("non-private hands show their cards to every viewer", () => {
+    const h = new Hand<number>("alice", mulberry32(1), [1, 2, 3], { isPrivate: false });
+    expect(h.isPrivate).toBe(false);
+    expect(h.viewFor("alice").cards).toEqual([1, 2, 3]);
+    expect(h.viewFor("bob").cards).toEqual([1, 2, 3]);
+  });
+
+  it("starts with no linked player by default", () => {
+    const h = makeHand<number>([]);
+    expect(h.player).toBeUndefined();
+  });
+
+  it("accepts a player reference at construction and via assignment", () => {
+    const fakePlayer = {
+      id: "alice",
+      decide: async () => ({ type: "noop", params: {} }),
+    } as const;
+    const h = new Hand<number>("alice", mulberry32(1), [], { player: fakePlayer });
+    expect(h.player).toBe(fakePlayer);
+    h.player = undefined;
+    expect(h.player).toBeUndefined();
+    h.player = fakePlayer;
+    expect(h.player).toBe(fakePlayer);
+  });
+
   it("reveal returns all cards regardless of viewer", () => {
     const h = makeHand<number>([7, 8]);
     expect(h.reveal()).toEqual([7, 8]);
@@ -122,6 +152,22 @@ describe("Hand", () => {
     it("returns an empty map when the hand is empty", () => {
       const h = new Hand<ColoredCard>("alice", mulberry32(1));
       expect(h.count("rank").size).toBe(0);
+    });
+
+    it("valuesOf returns distinct values in first-seen order", () => {
+      const h = new Hand<ColoredCard>("alice", mulberry32(1), [
+        card(7, "blue"),
+        card(3, "red"),
+        card(3, "blue"),
+        card(7, "green"),
+      ]);
+      expect(h.valuesOf("rank")).toEqual([7, 3]);
+      expect(h.valuesOf("color")).toEqual(["blue", "red", "green"]);
+    });
+
+    it("valuesOf returns an empty array when the hand is empty", () => {
+      const h = new Hand<ColoredCard>("alice", mulberry32(1));
+      expect(h.valuesOf("rank")).toEqual([]);
     });
 
     it("skips cards whose union branch lacks the requested field", () => {

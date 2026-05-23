@@ -11,6 +11,7 @@ All exports are available from the root: `import { Deck, Die, ... } from "bg-lib
 - [Hand](#hand)
 - [Game](#game)
 - [GameConfig](#gameconfig)
+- [Players](#players)
 - [Prefabs](#prefabs)
 
 ---
@@ -75,12 +76,14 @@ interface CardContainer<TCard> {
 | `remove(predicate)` | Remove and return the first matching card, or `undefined`. |
 | `shuffle()` | Randomize order using the container's own `Rng`. |
 | `count(field)` | Group held cards by the value of a named `Card` attribute and return a `Map<value, count>`. Cards missing the field (e.g. jokers when counting `"rank"`) are skipped. Field name and value type are derived from `TCard` via [`AttrKey` / `AttrValue`](#card); the method is unreachable on containers whose `TCard` isn't a `Card` (e.g. `Deck<number>`). |
+| `valuesOf(field)` | Distinct attribute values present in the container, in first-seen iteration order. Cards missing the field are skipped. Equivalent to `[...count(field).keys()]` but skips the intermediate `Map`. |
 
 ```ts
 const hand = new Hand<StandardPlayingCard>("alice", rng);
 hand.add(deck.draw(7));
 hand.count("rank");   // Map<number, number> — e.g. { 3 => 2, 7 => 1, 11 => 4 }
 hand.count("suit");   // Map<Suit, number>
+hand.valuesOf("rank"); // number[] — distinct ranks in first-seen order
 ```
 
 Operations that are specific to one container — drawing, discarding, per-viewer visibility — live on the concrete classes, not on this interface.
@@ -378,21 +381,38 @@ Source: [src/hand/hand.ts](../src/hand/hand.ts)
 `Hand<TCard>` implements [`CardContainer<TCard>`](#cardcontainer).
 
 ```ts
-new Hand<TCard>(ownerId: PlayerId, rng: Rng, initial?: readonly TCard[])
+new Hand<TCard>(
+  ownerId: PlayerId,
+  rng: Rng,
+  initial?: readonly TCard[],
+  options?: HandOptions,
+)
 ```
 
 The `Rng` is required because `shuffle()` is part of the `CardContainer` contract. Most games never shuffle a hand, but constructing one with an `Rng` keeps the determinism invariant uniform across primitives.
 
 | Member | Description |
 | --- | --- |
-| `ownerId: PlayerId` | The player who owns (and can see) this hand. |
+| `ownerId: PlayerId` | The player who owns this hand. |
+| `player: Player \| undefined` | Optional reference to the owning `Player`. Mutable so the game's `initialState` can wire up the symmetric `player.hand ⇄ hand.player` cross-link after both objects exist. |
+| `isPrivate: boolean` | If `true` (default), only the owner sees the cards via `viewFor`; other viewers see only the count. If `false`, all viewers see the cards. |
 | `size: number` | Number of cards held. |
 | `add(card \| cards)` | Add one or many cards. |
 | `contains(predicate)` | True if any card matches. |
 | `remove(predicate): TCard \| undefined` | Remove and return the first card matching `predicate`. |
 | `shuffle()` | Randomize the in-memory order of cards. Rarely needed in practice; provided for `CardContainer` uniformity. |
-| `viewFor(viewerId): HandView<TCard>` | Per-viewer projection — owner sees cards, others see count only. |
+| `count(field)` / `valuesOf(field)` | Inherited from [`CardContainer`](#cardcontainer). |
+| `viewFor(viewerId): HandView<TCard>` | Per-viewer projection — visibility honors `isPrivate`. |
 | `reveal(): readonly TCard[]` | God-mode access for game logic. Bypasses visibility. |
+
+### `interface HandOptions`
+
+```ts
+interface HandOptions {
+  readonly player?: Player<PlayerView>;
+  readonly isPrivate?: boolean;  // default true
+}
+```
 
 ### `interface HandView<TCard>`
 
@@ -504,19 +524,94 @@ type ValidationResult =
 
 `runGame` calls this on every move and throws `IllegalMoveError` if it fails. Games may also call it directly when validating responses received from outside the loop (e.g. over the network).
 
+### Moves: `PlayerMove`, `GameMove`, `Move`
+
+Game rules are described by a list of moves rather than by hand-written `moveOffering` / `applyMove` switches. Each move is a self-contained unit that knows both how to present itself and how to apply.
+
+```ts
+type Move<TState> = PlayerMove<TState> | GameMove<TState>;
+
+interface PlayerMove<TState> {
+  readonly kind: "player";
+  readonly type: string;
+  /** Build the move's option, or return null if not currently legal. */
+  offer(state: TState, playerId: PlayerId): PlayerMoveOffer | null;
+  apply(
+    state: TState,
+    params: Readonly<Record<string, MoveParamValue>>,
+    ctx: MoveContext,
+  ): MoveResult<TState>;
+}
+
+interface GameMove<TState> {
+  readonly kind: "game";
+  readonly type: string;
+  /** Invoked only via another move's `triggers`. Never offered to players. */
+  apply(
+    state: TState,
+    params: Readonly<Record<string, MoveParamValue>>,
+    ctx: MoveContext,
+  ): MoveResult<TState>;
+}
+
+interface PlayerMoveOffer {
+  readonly label?: string;
+  readonly params: readonly MoveParam[];
+}
+
+interface MoveResult<TState> {
+  readonly state: TState;
+  /** Follow-up moves run depth-first before the loop yields to the next player turn. */
+  readonly triggers?: readonly TriggeredMove[];
+}
+
+interface TriggeredMove {
+  readonly type: string;
+  readonly params?: Readonly<Record<string, MoveParamValue>>;
+}
+
+interface MoveContext {
+  readonly actingPlayerId: PlayerId;
+  readonly triggeredBy?: string;   // undefined on the player-chosen move
+  readonly rng: Rng;
+}
+```
+
+`PlayerMove.offer` is called for every player-move on every player turn. Returning `null` excludes the move from the offering. State-derived option lists (e.g. "rank must be a value you already hold") fall out naturally — derive them inside `offer` from the current state and player.
+
+`MoveResult.triggers` references other moves by `type`. Only `GameMove`s can be triggered. Triggered moves run **depth-first**: if `A.apply` returns triggers `[B, C]`, the engine runs `B`, then any triggers `B` produces (and theirs, recursively), then `C`. The whole chain settles before the loop asks for the next player's move.
+
 ### `interface Player<TView>`
 
 ```ts
 interface Player<TView extends PlayerView> {
   readonly id: PlayerId;
+  hand?: Hand<unknown>;
   decide(view: TView, offering: MoveOffering): Promise<MoveResponse>;
   onGameStart?(view: TView): void | Promise<void>;
-  onMoveApplied?(view: TView, move: MoveResponse, byPlayer: PlayerId): void | Promise<void>;
+  onMoveApplied?(view: TView, applied: AppliedMove): void | Promise<void>;
   onGameEnd?(view: TView, result: GameResult): void | Promise<void>;
 }
 ```
 
 `decide` is async so the same contract fits humans (UI input), in-process bots, and remote/ML agents. The response is validated by the loop before being applied.
+
+`onMoveApplied` fires after **every** applied move — the player-chosen move and each game-triggered follow-up. Inspect `applied.triggeredBy` to tell them apart.
+
+`hand` is optional and intentionally typed as `Hand<unknown>` — it's a back-reference that lets `player.hand` ⇄ `hand.player` form a symmetric cross-link. Game code typically operates on its own strongly-typed `state.hands` array rather than dereferencing `player.hand`, so the loose typing is rarely felt at use sites.
+
+### `interface AppliedMove`
+
+A record of a move that the engine actually applied. Stored in `GameRunResult.history` and passed to `Player.onMoveApplied`.
+
+```ts
+interface AppliedMove {
+  readonly type: string;
+  readonly params: Readonly<Record<string, MoveParamValue>>;
+  readonly playerId: PlayerId;    // who was on turn when this fired
+  readonly triggeredBy?: string;  // the move type that triggered this one; absent on player-chosen moves
+}
+```
 
 ### `interface GameResult`
 
@@ -532,17 +627,18 @@ interface GameResult {
 
 ```ts
 interface Game<TState, TView extends PlayerView> {
-  initialState(playerIds: readonly PlayerId[], rng: Rng): TState;
+  initialState(players: readonly Player<TView>[], rng: Rng): TState;
+  readonly moves: readonly Move<TState>[];
   currentPlayer(state: TState): PlayerId;
   isTerminal(state: TState): boolean;
-  result(state: TState): GameResult;                              // valid only when isTerminal
-  moveOffering(state: TState, playerId: PlayerId): MoveOffering;
-  applyMove(state: TState, move: MoveResponse, playerId: PlayerId): TState;
+  result(state: TState): GameResult;     // valid only when isTerminal
   viewFor(state: TState, viewerId: PlayerId): TView;
 }
 ```
 
-`applyMove` should return a new state rather than mutate the input. The loop carries the returned state forward.
+`moves` is the game's full move catalog. Each entry's `type` must be unique. The engine builds the offering by calling `offer` on every player-move; it dispatches triggers by looking the target type up in this list.
+
+`initialState` receives the real `Player` instances (not just their ids) so the game can wire up cross-links such as `hand.player = p; p.hand = hand;`.
 
 ### `runGame(game, players, rng): Promise<GameRunResult<TState>>`
 
@@ -556,13 +652,18 @@ function runGame<TState, TView extends PlayerView>(
 interface GameRunResult<TState> {
   readonly result: GameResult;
   readonly finalState: TState;
-  readonly history: readonly { readonly playerId: PlayerId; readonly move: MoveResponse }[];
+  /** Every applied move in order — player moves and triggered game moves alike. */
+  readonly history: readonly AppliedMove[];
 }
 ```
 
 The loop:
 1. Calls `onGameStart` on every player.
-2. While `!isTerminal(state)`: gets the current player, builds the offering, asks them to `decide`, validates the response with `validateMoveResponse`, applies it, and notifies every player via `onMoveApplied`.
+2. While `!isTerminal(state)`:
+   - Gets `currentPlayer(state)`.
+   - Builds the offering by calling `offer(state, currentId)` on every `kind: "player"` move; collects the non-null results.
+   - Asks the player to `decide`, validates the response with `validateMoveResponse`.
+   - Runs the chosen player-move's `apply`, then walks its `triggers` depth-first — each triggered game-move runs through `apply`, records its `AppliedMove` in `history`, and notifies every player via `onMoveApplied`. Triggers a triggered move produces are themselves processed before the next sibling trigger.
 3. Calls `onGameEnd` and returns the final result.
 
 ### `class IllegalMoveError`
@@ -618,6 +719,43 @@ deck.deal(hands, 3);              // full-rounds (from config)
 deck.deal(hands, 3, "exhaust");   // per-call override wins
 config.dealStrategy = "reshuffle";
 deck.deal(hands, 3);              // reshuffle (live mutation picked up)
+```
+
+---
+
+## Players
+
+Source: [src/players/](../src/players/)
+
+Ready-to-use `Player` implementations. Game-agnostic — each is generic over `TView` so you can drop them into any game.
+
+### `randomBot<TView>(id, rng): Player<TView>`
+
+Source: [src/players/random/random.ts](../src/players/random/random.ts)
+
+```ts
+function randomBot<TView extends PlayerView>(id: PlayerId, rng: Rng): Player<TView>;
+```
+
+Picks a uniformly-random *legal* move from each offering. Useful as a placeholder opponent, baseline benchmark, or smoke test. Per-param behavior:
+
+| Kind | Behavior |
+| --- | --- |
+| `named-options` | Uniform random pick from `options`. |
+| `number-range` | Uniform random value in `[min, max]`, aligned to `step`. |
+| `binary` | Uniform random boolean. |
+| `string` | The empty string. |
+
+Throws if the offering has no options, or if a `named-options` param has an empty `options` array.
+
+Randomness is fully driven by the provided `Rng`, so the same seed produces the same sequence of decisions. Fork from a parent `Rng` (`rng.fork()`) when you want per-bot streams that don't perturb each other.
+
+```ts
+import { mulberry32, randomBot, runGame } from "bg-library";
+
+const rng = mulberry32(42);
+const players = ["alice", "bob"].map((id) => randomBot<MyView>(id, rng.fork()));
+const result = await runGame(myGame, players, rng);
 ```
 
 ---
