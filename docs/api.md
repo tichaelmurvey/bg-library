@@ -571,11 +571,25 @@ interface TriggeredMove {
 }
 
 interface MoveContext {
-  readonly actingPlayerId: PlayerId;
-  readonly triggeredBy?: string;   // undefined on the player-chosen move
+  readonly actingPlayerId?: PlayerId;   // undefined for engine-driven moves
+  readonly triggeredBy?: string;        // undefined on the chain's entrypoint
   readonly rng: Rng;
+  /** Force the enclosing player_turn_sequence to advance after the chain settles. */
+  advanceTurn(): void;
 }
 ```
+
+`actingPlayerId` is set on every move run inside a `player_turn_sequence` (player-chosen and triggered alike). It is **undefined** for moves run as standalone entries in `gameSequence` (e.g. an `initial-deal` setup move). `ctx.advanceTurn()` is a no-op outside a `player_turn_sequence`.
+
+For convenience, `PlayerMove.apply` receives a narrowed **`PlayerMoveContext`** where `actingPlayerId` is required:
+
+```ts
+interface PlayerMoveContext extends Omit<MoveContext, "actingPlayerId"> {
+  readonly actingPlayerId: PlayerId;   // narrowed: required
+}
+```
+
+The engine guarantees this — player-moves only run inside a `player_turn_sequence`. Game-move authors keep the looser `MoveContext` because game-moves can also run in engine chains (e.g. triggered from an `initial-deal` move) where no player is on turn.
 
 `PlayerMove.offer` is called for every player-move on every player turn. Returning `null` excludes the move from the offering. State-derived option lists (e.g. "rank must be a value you already hold") fall out naturally — derive them inside `offer` from the current state and player.
 
@@ -628,17 +642,53 @@ interface GameResult {
 ```ts
 interface Game<TState, TView extends PlayerView> {
   initialState(players: readonly Player<TView>[], rng: Rng): TState;
-  readonly moves: readonly Move<TState>[];
-  currentPlayer(state: TState): PlayerId;
+  readonly gameSequence: readonly SequenceNode<TState>[];
   isTerminal(state: TState): boolean;
   result(state: TState): GameResult;     // valid only when isTerminal
   viewFor(state: TState, viewerId: PlayerId): TView;
 }
 ```
 
-`moves` is the game's full move catalog. Each entry's `type` must be unique. The engine builds the offering by calling `offer` on every player-move; it dispatches triggers by looking the target type up in this list.
+`gameSequence` is the game's high-level structure: an ordered list of phases the engine runs in turn. The only node type today is `player_turn_sequence` — see below.
 
 `initialState` receives the real `Player` instances (not just their ids) so the game can wire up cross-links such as `hand.player = p; p.hand = hand;`.
+
+There is no `currentPlayer` method — the sequence node owns the turn cursor.
+
+### Sequence nodes
+
+```ts
+type SequenceNode<TState> = PlayerTurnSequence<TState> | GameMove<TState>;
+
+interface PlayerTurnSequence<TState> {
+  readonly type: "player_turn_sequence";
+  readonly moves: readonly Move<TState>[];
+}
+```
+
+A `gameSequence` entry is either a structured sub-phase (today just `PlayerTurnSequence`) or a bare `GameMove` that the engine runs once. Inline game-moves are convenient for setup or teardown — e.g. an initial-deal move placed before the player turn sequence:
+
+```ts
+gameSequence: [
+  initialDealMove,                                     // engine runs this once
+  { type: "player_turn_sequence", moves: [...] },      // then player turns begin
+]
+```
+
+Inline moves must be `kind: "game"` (player-moves only make sense inside a `player_turn_sequence`). Their `apply` runs with `ctx.actingPlayerId === undefined`, and any triggers chain normally against the global move catalog (collected from every node).
+
+**`player_turn_sequence`** iterates the players round-robin. For each player:
+
+1. The engine calls `offer` on every player-move in `moves`, builds an offering from the non-null results.
+2. If the offering is empty, the player is skipped and the cursor advances. When every player has been skipped consecutively, the phase exits.
+3. Otherwise the player decides; the chosen move's `apply` runs and its triggers chain depth-first.
+4. After the chain settles, the cursor either:
+   - **advances** if any move during the chain called `ctx.advanceTurn()`, or
+   - **stays on the same player** otherwise — they get another offering on the next iteration. If their offering is now empty, the skip-and-advance branch above handles it.
+
+This means moves don't need an explicit "end turn" trigger when a player runs out of legal options (the engine notices), but they *do* need `ctx.advanceTurn()` for rules-driven pass-the-turn cases (e.g. Go Fish: missing a fish ends the turn even though the player still has playable cards).
+
+The phase also exits whenever `isTerminal(state)` becomes true.
 
 ### `runGame(game, players, rng): Promise<GameRunResult<TState>>`
 
@@ -659,12 +709,13 @@ interface GameRunResult<TState> {
 
 The loop:
 1. Calls `onGameStart` on every player.
-2. While `!isTerminal(state)`:
-   - Gets `currentPlayer(state)`.
-   - Builds the offering by calling `offer(state, currentId)` on every `kind: "player"` move; collects the non-null results.
+2. Walks `game.gameSequence` in order. Each entry is a sequence node; the engine runs it via the appropriate handler (today only `player_turn_sequence`). A node runs until it self-exits or `isTerminal(state)` fires.
+3. Inside a `player_turn_sequence`, each player turn:
+   - Builds the offering by calling `offer(state, currentId)` on every `kind: "player"` move in the node.
    - Asks the player to `decide`, validates the response with `validateMoveResponse`.
    - Runs the chosen player-move's `apply`, then walks its `triggers` depth-first — each triggered game-move runs through `apply`, records its `AppliedMove` in `history`, and notifies every player via `onMoveApplied`. Triggers a triggered move produces are themselves processed before the next sibling trigger.
-3. Calls `onGameEnd` and returns the final result.
+   - Advances the cursor if any move called `ctx.advanceTurn()` during the chain; otherwise stays on the same player for the next iteration.
+4. Calls `onGameEnd` and returns the final result.
 
 ### `class IllegalMoveError`
 

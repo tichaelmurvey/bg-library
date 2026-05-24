@@ -5,7 +5,7 @@ import { mulberry32 } from "../rng/mulberry32.js";
 import type { Rng } from "../rng/rng.js";
 import type { Game } from "./game.js";
 import { IllegalMoveError, runGame } from "./loop.js";
-import type { GameMove, Move, PlayerMove, PlayerView } from "./move.js";
+import type { GameMove, PlayerMove, PlayerView, SequenceNode } from "./move.js";
 import type { Player } from "./player.js";
 
 // --- Minimal "draw N cards then pass" game ------------------------------
@@ -18,7 +18,8 @@ interface State {
   readonly deck: Deck<number>;
   readonly best: Readonly<Record<PlayerId, number>>;
   readonly order: readonly PlayerId[];
-  readonly turn: number;
+  /** Players who have already taken their one allotted turn. */
+  readonly played: ReadonlySet<PlayerId>;
 }
 
 interface View extends PlayerView {
@@ -30,7 +31,8 @@ interface View extends PlayerView {
 const drawMove: PlayerMove<State> = {
   kind: "player",
   type: "draw",
-  offer(s) {
+  offer(s, playerId) {
+    if (s.played.has(playerId)) return null;
     if (s.deck.size === 0) return null;
     const max = Math.min(3, s.deck.size);
     return {
@@ -42,8 +44,10 @@ const drawMove: PlayerMove<State> = {
     const n = params.n as number;
     const drawn = s.deck.draw(n);
     const localBest = Math.max(...drawn);
+    const played = new Set(s.played);
+    played.add(ctx.actingPlayerId);
     return {
-      state: { ...s, turn: s.turn + 1 },
+      state: { ...s, played },
       triggers: [
         { type: "record-score", params: { playerId: ctx.actingPlayerId, score: localBest } },
       ],
@@ -54,11 +58,14 @@ const drawMove: PlayerMove<State> = {
 const passMove: PlayerMove<State> = {
   kind: "player",
   type: "pass",
-  offer() {
+  offer(s, playerId) {
+    if (s.played.has(playerId)) return null;
     return { label: "Pass", params: [] };
   },
-  apply(s) {
-    return { state: { ...s, turn: s.turn + 1 } };
+  apply(s, _params, ctx) {
+    const played = new Set(s.played);
+    played.add(ctx.actingPlayerId);
+    return { state: { ...s, played } };
   },
 };
 
@@ -84,14 +91,16 @@ const game: Game<State, View> = {
     deck.shuffle();
     const best: Record<PlayerId, number> = {};
     for (const p of players) best[p.id] = 0;
-    return { deck, best, order: players.map((p) => p.id), turn: 0 };
+    return { deck, best, order: players.map((p) => p.id), played: new Set<PlayerId>() };
   },
-  moves: [drawMove, passMove, recordScoreMove] satisfies Move<State>[],
-  currentPlayer(s) {
-    return s.order[s.turn] as PlayerId;
-  },
+  gameSequence: [
+    {
+      type: "player_turn_sequence",
+      moves: [drawMove, passMove, recordScoreMove],
+    },
+  ] satisfies SequenceNode<State>[],
   isTerminal(s) {
-    return s.turn >= s.order.length;
+    return s.played.size >= s.order.length;
   },
   result(s) {
     const scores = { ...s.best };
