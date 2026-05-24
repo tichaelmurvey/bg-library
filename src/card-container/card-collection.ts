@@ -61,11 +61,17 @@ export class CardCollection<TCard> {
     return this.items.some(predicate);
   }
 
-  /** Remove and return the first matching card, or undefined. */
-  remove(predicate: (card: TCard) => boolean): TCard | undefined {
+  /**
+   * Find the first card matching the predicate, remove it from this
+   * collection, and add it to `destination`. Returns the moved card, or
+   * `undefined` if no card matched.
+   */
+  move(predicate: (card: TCard) => boolean, destination: CardContainer<TCard>): TCard | undefined {
     const idx = this.items.findIndex(predicate);
     if (idx === -1) return undefined;
-    return this.items.splice(idx, 1)[0];
+    const card = this.items.splice(idx, 1)[0]!;
+    destination.add(card);
+    return card;
   }
 
   /** Randomize order using the collection's own `Rng`. */

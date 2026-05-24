@@ -3,8 +3,10 @@ import type { Card, DiscreteAttribute, IntegerAttribute } from "../card/card.js"
 import { mulberry32 } from "../rng/mulberry32.js";
 import { Hand } from "./hand.js";
 
+const testPlayer = { id: "alice", decide: async () => ({ type: "noop" as const, params: {} }) };
+
 const makeHand = <T>(initial: readonly T[] = [], seed = 1) =>
-  new Hand<T>("alice", mulberry32(seed), initial);
+  new Hand<T>(mulberry32(seed), initial, { player: testPlayer });
 
 describe("Hand", () => {
   it("starts with the provided cards", () => {
@@ -25,22 +27,27 @@ describe("Hand", () => {
     expect(h.contains((c) => c === 99)).toBe(false);
   });
 
-  it("remove pulls the first matching card", () => {
+  it("move transfers the first matching card to the destination", () => {
     const h = makeHand<number>([1, 2, 3, 2]);
-    const removed = h.remove((c) => c === 2);
-    expect(removed).toBe(2);
+    const dest = new Hand<number>(mulberry32(1));
+    const moved = h.move((c) => c === 2, dest);
+    expect(moved).toBe(2);
     expect(h.size).toBe(3);
+    expect(dest.size).toBe(1);
+    expect(dest.contains((c) => c === 2)).toBe(true);
   });
 
-  it("remove returns undefined when nothing matches", () => {
+  it("move returns undefined when nothing matches", () => {
     const h = makeHand<number>([1, 2]);
-    expect(h.remove((c) => c === 99)).toBeUndefined();
+    const dest = new Hand<number>(mulberry32(1));
+    expect(h.move((c) => c === 99, dest)).toBeUndefined();
     expect(h.size).toBe(2);
+    expect(dest.size).toBe(0);
   });
 
   it("shuffle is deterministic for the same seed", () => {
-    const a = new Hand<number>("alice", mulberry32(42), [1, 2, 3, 4, 5, 6, 7]);
-    const b = new Hand<number>("alice", mulberry32(42), [1, 2, 3, 4, 5, 6, 7]);
+    const a = new Hand<number>(mulberry32(42), [1, 2, 3, 4, 5, 6, 7], { player: testPlayer });
+    const b = new Hand<number>(mulberry32(42), [1, 2, 3, 4, 5, 6, 7], { player: testPlayer });
     a.shuffle();
     b.shuffle();
     expect(a.reveal()).toEqual(b.reveal());
@@ -74,14 +81,14 @@ describe("Hand", () => {
   });
 
   it("non-private hands show their cards to every viewer", () => {
-    const h = new Hand<number>("alice", mulberry32(1), [1, 2, 3], { isPrivate: false });
+    const h = new Hand<number>(mulberry32(1), [1, 2, 3], { isPrivate: false });
     expect(h.isPrivate).toBe(false);
     expect(h.viewFor("alice").cards).toEqual([1, 2, 3]);
     expect(h.viewFor("bob").cards).toEqual([1, 2, 3]);
   });
 
   it("starts with no linked player by default", () => {
-    const h = makeHand<number>([]);
+    const h = new Hand<number>(mulberry32(1));
     expect(h.player).toBeUndefined();
   });
 
@@ -90,7 +97,7 @@ describe("Hand", () => {
       id: "alice",
       decide: async () => ({ type: "noop", params: {} }),
     } as const;
-    const h = new Hand<number>("alice", mulberry32(1), [], { player: fakePlayer });
+    const h = new Hand<number>(mulberry32(1), [], { player: fakePlayer });
     expect(h.player).toBe(fakePlayer);
     h.player = undefined;
     expect(h.player).toBeUndefined();
@@ -126,7 +133,7 @@ describe("Hand", () => {
     });
 
     it("groups by an integer attribute", () => {
-      const h = new Hand<ColoredCard>("alice", mulberry32(1), [
+      const h = new Hand<ColoredCard>(mulberry32(1), [
         card(3, "red"),
         card(3, "blue"),
         card(5, "red"),
@@ -138,7 +145,7 @@ describe("Hand", () => {
     });
 
     it("groups by a discrete attribute", () => {
-      const h = new Hand<ColoredCard>("alice", mulberry32(1), [
+      const h = new Hand<ColoredCard>(mulberry32(1), [
         card(3, "red"),
         card(3, "blue"),
         card(5, "red"),
@@ -150,12 +157,12 @@ describe("Hand", () => {
     });
 
     it("returns an empty map when the hand is empty", () => {
-      const h = new Hand<ColoredCard>("alice", mulberry32(1));
+      const h = new Hand<ColoredCard>(mulberry32(1));
       expect(h.count("rank").size).toBe(0);
     });
 
     it("valuesOf returns distinct values in first-seen order", () => {
-      const h = new Hand<ColoredCard>("alice", mulberry32(1), [
+      const h = new Hand<ColoredCard>(mulberry32(1), [
         card(7, "blue"),
         card(3, "red"),
         card(3, "blue"),
@@ -166,7 +173,7 @@ describe("Hand", () => {
     });
 
     it("valuesOf returns an empty array when the hand is empty", () => {
-      const h = new Hand<ColoredCard>("alice", mulberry32(1));
+      const h = new Hand<ColoredCard>(mulberry32(1));
       expect(h.valuesOf("rank")).toEqual([]);
     });
 
@@ -179,7 +186,7 @@ describe("Hand", () => {
         name: "red",
         attrs: { color: { kind: "discrete", value: "red", options: ["red", "blue", "green"] } },
       };
-      const h = new Hand<EitherCard>("alice", mulberry32(1), [ranked, colored, ranked]);
+      const h = new Hand<EitherCard>(mulberry32(1), [ranked, colored, ranked]);
       const byRank = h.count("rank");
       expect(byRank.get(3)).toBe(2);
       expect(byRank.size).toBe(1);

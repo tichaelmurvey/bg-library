@@ -8,7 +8,7 @@ import type { Rng } from "../rng/rng.js";
 export type PlayerId = string;
 
 export interface HandView<TCard> {
-  readonly ownerId: PlayerId;
+  readonly ownerId: PlayerId | undefined;
   readonly count: number;
   readonly cards: readonly TCard[] | undefined;
 }
@@ -36,12 +36,15 @@ export class Hand<TCard> implements CardContainer<TCard> {
   /** True if non-owners see only the card count via `viewFor`. */
   readonly isPrivate: boolean;
 
-  constructor(
-    readonly ownerId: PlayerId,
-    rng: Rng,
-    initial: readonly TCard[] = [],
-    options: HandOptions = {},
-  ) {
+  /**
+   * Owning player's ID, derived from the linked player reference.
+   * Returns `undefined` when no player is set.
+   */
+  get ownerId(): PlayerId | undefined {
+    return this.player?.id;
+  }
+
+  constructor(rng: Rng, initial: readonly TCard[] = [], options: HandOptions = {}) {
     this.cards = new CardCollection<TCard>(rng, initial);
     this.player = options.player;
     this.isPrivate = options.isPrivate ?? true;
@@ -59,8 +62,8 @@ export class Hand<TCard> implements CardContainer<TCard> {
     return this.cards.contains(predicate);
   }
 
-  remove(predicate: (card: TCard) => boolean): TCard | undefined {
-    return this.cards.remove(predicate);
+  move(predicate: (card: TCard) => boolean, destination: CardContainer<TCard>): TCard | undefined {
+    return this.cards.move(predicate, destination);
   }
 
   shuffle(): void {

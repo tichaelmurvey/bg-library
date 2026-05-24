@@ -15,11 +15,11 @@ import type { Player } from "./player.js";
 // whoever holds the highest card wins. Pass ⇒ no cards drawn ⇒ score 0.
 
 interface State {
-  readonly deck: Deck<number>;
-  readonly best: Readonly<Record<PlayerId, number>>;
+  deck: Deck<number>;
+  best: Record<PlayerId, number>;
   readonly order: readonly PlayerId[];
   /** Players who have already taken their one allotted turn. */
-  readonly played: ReadonlySet<PlayerId>;
+  played: Set<PlayerId>;
 }
 
 interface View extends PlayerView {
@@ -44,14 +44,8 @@ const drawMove: PlayerMove<State> = {
     const n = params.n as number;
     const drawn = s.deck.draw(n);
     const localBest = Math.max(...drawn);
-    const played = new Set(s.played);
-    played.add(ctx.actingPlayerId);
-    return {
-      state: { ...s, played },
-      triggers: [
-        { type: "record-score", params: { playerId: ctx.actingPlayerId, score: localBest } },
-      ],
-    };
+    s.played.add(ctx.actingPlayerId);
+    ctx.triggerMove("record-score", { playerId: ctx.actingPlayerId, score: localBest });
   },
 };
 
@@ -63,9 +57,7 @@ const passMove: PlayerMove<State> = {
     return { label: "Pass", params: [] };
   },
   apply(s, _params, ctx) {
-    const played = new Set(s.played);
-    played.add(ctx.actingPlayerId);
-    return { state: { ...s, played } };
+    s.played.add(ctx.actingPlayerId);
   },
 };
 
@@ -75,10 +67,7 @@ const recordScoreMove: GameMove<State> = {
   apply(s, params) {
     const playerId = params.playerId as PlayerId;
     const score = params.score as number;
-    const prev = s.best[playerId] ?? 0;
-    return {
-      state: { ...s, best: { ...s.best, [playerId]: Math.max(prev, score) } },
-    };
+    s.best[playerId] = Math.max(s.best[playerId] ?? 0, score);
   },
 };
 
@@ -203,7 +192,7 @@ describe("runGame with Move catalog", () => {
       },
       onMoveApplied(_v, applied) {
         const tag = applied.triggeredBy ? `triggered:${applied.type}` : applied.type;
-        calls.push(`${id}:applied(${tag} by ${applied.playerId})`);
+        calls.push(`${id}:applied(${tag} by ${applied.playerId ?? "<engine>"})`);
       },
       onGameEnd() {
         calls.push(`${id}:end`);

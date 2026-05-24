@@ -59,7 +59,6 @@ export type {
   MoveParam,
   MoveParamValue,
   MoveResponse,
-  MoveResult,
   NamedOptionsParam,
   NumberRangeParam,
   ParamKind,
@@ -68,10 +67,11 @@ export type {
   PlayerMoveContext,
   PlayerMoveOffer,
   PlayerTurnSequence,
+  PlayerTurnSequenceInfo,
   PlayerView,
+  SequenceInfo,
   SequenceNode,
   StringParam,
-  TriggeredMove,
   ValidationResult,
 } from "./game/move.js";
 export { validateMoveResponse } from "./game/move.js";

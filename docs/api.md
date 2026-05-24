@@ -62,7 +62,7 @@ interface CardContainer<TCard> {
   readonly size: number;
   add(card: TCard | readonly TCard[]): void;
   contains(predicate: (card: TCard) => boolean): boolean;
-  remove(predicate: (card: TCard) => boolean): TCard | undefined;
+  move(predicate: (card: TCard) => boolean, destination: CardContainer<TCard>): TCard | undefined;
   shuffle(): void;
   count<K extends AttrKey<TCard>>(field: K): Map<AttrValue<TCard, K>, number>;
 }
@@ -73,7 +73,7 @@ interface CardContainer<TCard> {
 | `size` | Number of cards currently in the container's primary collection. |
 | `add(card \| cards)` | Add one or many cards. Insertion position is implementation-defined (see each class). |
 | `contains(predicate)` | True if any card matches the predicate. |
-| `remove(predicate)` | Remove and return the first matching card, or `undefined`. |
+| `move(predicate, destination)` | Find the first card matching the predicate, remove it from this container, and add it to `destination`. Returns the moved card, or `undefined`. Cards are persistent — they cannot be destroyed, only moved between containers. |
 | `shuffle()` | Randomize order using the container's own `Rng`. |
 | `count(field)` | Group held cards by the value of a named `Card` attribute and return a `Map<value, count>`. Cards missing the field (e.g. jokers when counting `"rank"`) are skipped. Field name and value type are derived from `TCard` via [`AttrKey` / `AttrValue`](#card); the method is unreachable on containers whose `TCard` isn't a `Card` (e.g. `Deck<number>`). |
 | `valuesOf(field)` | Distinct attribute values present in the container, in first-seen iteration order. Cards missing the field are skipped. Equivalent to `[...count(field).keys()]` but skips the intermediate `Map`. |
@@ -111,7 +111,7 @@ new CardCollection<TCard>(rng: Rng, initial?: readonly TCard[])
 | `addToEnd(card \| cards)` | Append. |
 | `addToStart(card \| cards)` | Prepend. |
 | `contains(predicate)` | True if any item matches. |
-| `remove(predicate): TCard \| undefined` | Remove the first matching item. |
+| `move(predicate, destination): TCard \| undefined` | Remove the first matching item and add it to `destination`. |
 | `shuffle()` | Randomize order using the collection's own `Rng`. |
 | `peekFromEnd(n): readonly TCard[]` | Non-mutating look at the last `n` items (capped at `size`). |
 | `takeFromEnd(n): TCard[]` | Remove and return the last `n` items in underlying order. Throws `RangeError` on underflow. |
@@ -206,7 +206,7 @@ const aceOfSpades: PlayingCard = {
 
 Source: [src/deck/deck.ts](../src/deck/deck.ts)
 
-`Deck<TCard>` implements [`CardContainer<TCard>`](#cardcontainer). `contains` and `remove` operate on the draw pile only.
+`Deck<TCard>` implements [`CardContainer<TCard>`](#cardcontainer). `contains` and `move` operate on the draw pile only.
 
 A discard pile is **another `Deck`**, linked by reference. Decks carry a stable `id` so paired decks can be re-linked after `toJSON` / `fromJSON`. Cards move between decks explicitly — e.g. `discard.add(main.draw(3))`.
 
@@ -230,7 +230,7 @@ The last element of `cards` is the **top** of the deck (drawn first).
 | `peek(n = 1): readonly TCard[]` | Non-mutating look at the top `n` cards. |
 | `add(card \| cards)` | Add one or many cards to the **bottom** of the draw pile. To send cards to the discard pile, call `add()` on the linked discard `Deck` directly. |
 | `contains(predicate)` | True if any card in the draw pile matches. Does not search the discard pile. |
-| `remove(predicate)` | Remove and return the first matching card from the draw pile. Does not search the discard pile. |
+| `move(predicate, destination)` | Find the first matching card in the draw pile, remove it, and add it to `destination`. Does not search the discard pile. |
 | `reshuffleDiscardIntoDeck()` | Drain the linked discard pile back into this deck and shuffle. `console.warn` and no-op if no discard pile is linked; silent no-op if the linked pile is empty. |
 | `deal(targets, n, strategy?)` | Distribute `n` cards round-robin to each target `CardContainer`. See below. |
 | `toJSON(): DeckSnapshot<TCard>` | Serialize current state (includes `id` and, when a discard pile is linked, `discardPileId`). |
@@ -382,7 +382,6 @@ Source: [src/hand/hand.ts](../src/hand/hand.ts)
 
 ```ts
 new Hand<TCard>(
-  ownerId: PlayerId,
   rng: Rng,
   initial?: readonly TCard[],
   options?: HandOptions,
@@ -393,13 +392,13 @@ The `Rng` is required because `shuffle()` is part of the `CardContainer` contrac
 
 | Member | Description |
 | --- | --- |
-| `ownerId: PlayerId` | The player who owns this hand. |
+| `ownerId: PlayerId \| undefined` | Owning player's ID, derived from `player.id`. Returns `undefined` when no player is set. |
 | `player: Player \| undefined` | Optional reference to the owning `Player`. Mutable so the game's `initialState` can wire up the symmetric `player.hand ⇄ hand.player` cross-link after both objects exist. |
 | `isPrivate: boolean` | If `true` (default), only the owner sees the cards via `viewFor`; other viewers see only the count. If `false`, all viewers see the cards. |
 | `size: number` | Number of cards held. |
 | `add(card \| cards)` | Add one or many cards. |
 | `contains(predicate)` | True if any card matches. |
-| `remove(predicate): TCard \| undefined` | Remove and return the first card matching `predicate`. |
+| `move(predicate, destination): TCard \| undefined` | Remove the first card matching `predicate` and add it to `destination`. |
 | `shuffle()` | Randomize the in-memory order of cards. Rarely needed in practice; provided for `CardContainer` uniformity. |
 | `count(field)` / `valuesOf(field)` | Inherited from [`CardContainer`](#cardcontainer). |
 | `viewFor(viewerId): HandView<TCard>` | Per-viewer projection — visibility honors `isPrivate`. |
@@ -418,7 +417,7 @@ interface HandOptions {
 
 ```ts
 interface HandView<TCard> {
-  readonly ownerId: PlayerId;
+  readonly ownerId: PlayerId | undefined;
   readonly count: number;
   readonly cards: readonly TCard[] | undefined; // undefined when hidden
 }
@@ -536,22 +535,30 @@ interface PlayerMove<TState> {
   readonly type: string;
   /** Build the move's option, or return null if not currently legal. */
   offer(state: TState, playerId: PlayerId): PlayerMoveOffer | null;
+  /**
+   * Apply the move with the chosen params. Mutates state in place.
+   * Use `ctx.triggerMove()` to queue follow-up moves (depth-first).
+   */
   apply(
     state: TState,
     params: Readonly<Record<string, MoveParamValue>>,
-    ctx: MoveContext,
-  ): MoveResult<TState>;
+    ctx: PlayerMoveContext,
+  ): void;
 }
 
 interface GameMove<TState> {
   readonly kind: "game";
   readonly type: string;
-  /** Invoked only via another move's `triggers`. Never offered to players. */
+  /**
+   * Apply this triggered move with the supplied params.
+   * Mutates state in place. Use `ctx.triggerMove()` to queue
+   * follow-up moves (depth-first).
+   */
   apply(
     state: TState,
     params: Readonly<Record<string, MoveParamValue>>,
     ctx: MoveContext,
-  ): MoveResult<TState>;
+  ): void;
 }
 
 interface PlayerMoveOffer {
@@ -559,41 +566,51 @@ interface PlayerMoveOffer {
   readonly params: readonly MoveParam[];
 }
 
-interface MoveResult<TState> {
-  readonly state: TState;
-  /** Follow-up moves run depth-first before the loop yields to the next player turn. */
-  readonly triggers?: readonly TriggeredMove[];
-}
-
-interface TriggeredMove {
-  readonly type: string;
-  readonly params?: Readonly<Record<string, MoveParamValue>>;
-}
-
 interface MoveContext {
-  readonly actingPlayerId?: PlayerId;   // undefined for engine-driven moves
   readonly triggeredBy?: string;        // undefined on the chain's entrypoint
   readonly rng: Rng;
   /** Force the enclosing player_turn_sequence to advance after the chain settles. */
   advanceTurn(): void;
+  /**
+   * Queue a move to run depth-first after this one. The move is looked
+   * up by `type` in the global move catalog. Only game-moves can be
+   * triggered. Multiple calls queue multiple moves; they run depth-first
+   * in the order they were queued.
+   */
+  triggerMove(type: string, params?: Readonly<Record<string, MoveParamValue>>): void;
+  /**
+   * Look up the nearest enclosing sequence of the given `type`.
+   * Returns `undefined` when no such sequence is active.
+   * When called without a `type`, returns the closest/deepest sequence
+   * regardless of type.
+   */
+  getSequence(type?: string): SequenceInfo | undefined;
 }
+
+interface PlayerTurnSequenceInfo {
+  readonly type: "player_turn_sequence";
+  readonly currentPlayer: { readonly id: PlayerId };
+}
+
+type SequenceInfo = PlayerTurnSequenceInfo;
+```
 ```
 
-`actingPlayerId` is set on every move run inside a `player_turn_sequence` (player-chosen and triggered alike). It is **undefined** for moves run as standalone entries in `gameSequence` (e.g. an `initial-deal` setup move). `ctx.advanceTurn()` is a no-op outside a `player_turn_sequence`.
+`ctx.advanceTurn()` is a no-op outside a `player_turn_sequence` (e.g. inside a standalone engine move) — there's no cursor to advance.
 
-For convenience, `PlayerMove.apply` receives a narrowed **`PlayerMoveContext`** where `actingPlayerId` is required:
+`PlayerMove.apply` receives a **`PlayerMoveContext`** that extends `MoveContext` with a guaranteed `actingPlayerId`:
 
 ```ts
-interface PlayerMoveContext extends Omit<MoveContext, "actingPlayerId"> {
-  readonly actingPlayerId: PlayerId;   // narrowed: required
+interface PlayerMoveContext extends MoveContext {
+  readonly actingPlayerId: PlayerId;
 }
 ```
 
-The engine guarantees this — player-moves only run inside a `player_turn_sequence`. Game-move authors keep the looser `MoveContext` because game-moves can also run in engine chains (e.g. triggered from an `initial-deal` move) where no player is on turn.
+This is the only place `actingPlayerId` is available — game-moves never see it. If a game-move needs to act on a specific player, the triggering move must pass the player id as a param (e.g. `ctx.triggerMove("commit-books", { playerId })`).
 
 `PlayerMove.offer` is called for every player-move on every player turn. Returning `null` excludes the move from the offering. State-derived option lists (e.g. "rank must be a value you already hold") fall out naturally — derive them inside `offer` from the current state and player.
 
-`MoveResult.triggers` references other moves by `type`. Only `GameMove`s can be triggered. Triggered moves run **depth-first**: if `A.apply` returns triggers `[B, C]`, the engine runs `B`, then any triggers `B` produces (and theirs, recursively), then `C`. The whole chain settles before the loop asks for the next player's move.
+Each `apply` function **mutates state in place** rather than returning a new state object. To queue follow-up moves, call `ctx.triggerMove(type, params?)` — these run **depth-first** after the current move's `apply` returns. If `A.apply` calls `triggerMove("B")` then `triggerMove("C")`, the engine runs `B`, then any triggers `B` produces (and theirs, recursively), then `C`. Only `GameMove`s can be triggered (calling `triggerMove` with a `PlayerMove`'s `type` throws). The whole chain settles before the loop asks for the next player's move.
 
 ### `interface Player<TView>`
 
@@ -622,7 +639,7 @@ A record of a move that the engine actually applied. Stored in `GameRunResult.hi
 interface AppliedMove {
   readonly type: string;
   readonly params: Readonly<Record<string, MoveParamValue>>;
-  readonly playerId: PlayerId;    // who was on turn when this fired
+  readonly playerId?: PlayerId;   // who was on turn; undefined for engine-driven moves
   readonly triggeredBy?: string;  // the move type that triggered this one; absent on player-chosen moves
 }
 ```
@@ -713,7 +730,7 @@ The loop:
 3. Inside a `player_turn_sequence`, each player turn:
    - Builds the offering by calling `offer(state, currentId)` on every `kind: "player"` move in the node.
    - Asks the player to `decide`, validates the response with `validateMoveResponse`.
-   - Runs the chosen player-move's `apply`, then walks its `triggers` depth-first — each triggered game-move runs through `apply`, records its `AppliedMove` in `history`, and notifies every player via `onMoveApplied`. Triggers a triggered move produces are themselves processed before the next sibling trigger.
+    - Runs the chosen player-move's `apply`, then processes any moves queued via `ctx.triggerMove()` depth-first — each triggered game-move runs through `apply`, records its `AppliedMove` in `history`, and notifies every player via `onMoveApplied`. Queued triggers from a triggered move are themselves processed before the next sibling trigger.
    - Advances the cursor if any move called `ctx.advanceTurn()` during the chain; otherwise stays on the same player for the next iteration.
 4. Calls `onGameEnd` and returns the final result.
 

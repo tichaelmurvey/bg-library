@@ -14,8 +14,8 @@ import type {
   PlayerMoveOffer,
   PlayerTurnSequence,
   PlayerView,
+  SequenceInfo,
   SequenceNode,
-  TriggeredMove,
 } from "./move.js";
 import { validateMoveResponse } from "./move.js";
 import type { GameResult, Player } from "./player.js";
@@ -152,7 +152,7 @@ async function runEngineMove<TState, TView extends PlayerView>(
   rng: Rng,
   movesByType: Map<string, Move<TState>>,
 ): Promise<TState> {
-  const { state: nextState } = await processChain(
+  await processChain(
     { type: move.type, params: {}, triggeredBy: undefined },
     movesByType,
     game,
@@ -162,7 +162,7 @@ async function runEngineMove<TState, TView extends PlayerView>(
     rng,
     undefined, // engine moves have no acting player
   );
-  return nextState;
+  return state;
 }
 
 async function runPlayerTurnSequence<TState, TView extends PlayerView>(
@@ -174,7 +174,7 @@ async function runPlayerTurnSequence<TState, TView extends PlayerView>(
   rng: Rng,
   movesByType: Map<string, Move<TState>>,
 ): Promise<TState> {
-  let s = initialState;
+  const s = initialState;
   let cursor = 0;
   let emptyStreak = 0;
 
@@ -214,7 +214,11 @@ async function runPlayerTurnSequence<TState, TView extends PlayerView>(
       throw new IllegalMoveError(current.id, chosen, `Unknown player move "${chosen.type}"`);
     }
 
-    const { state: nextState, forceAdvance } = await processChain(
+    const seq: SequenceInfo = {
+      type: "player_turn_sequence",
+      currentPlayer: { id: current.id },
+    };
+    const { forceAdvance } = await processChain(
       { type: chosen.type, params: chosen.params, triggeredBy: undefined },
       movesByType,
       game,
@@ -223,8 +227,8 @@ async function runPlayerTurnSequence<TState, TView extends PlayerView>(
       history,
       rng,
       current.id,
+      seq,
     );
-    s = nextState;
 
     // After the chain settles: advance only if a move explicitly asked,
     // OR (implicitly, at the top of the next iteration) the player has
@@ -242,23 +246,37 @@ async function runPlayerTurnSequence<TState, TView extends PlayerView>(
 /**
  * Execute a move and walk its trigger chain depth-first. Each applied
  * move is appended to `history` and broadcast via `onMoveApplied`.
- * Returns the post-chain state and whether any move in the chain called
- * `ctx.advanceTurn()`.
+ * Returns whether any move in the chain called `ctx.advanceTurn()`.
+ * The state is mutated in place.
  */
 async function processChain<TState, TView extends PlayerView>(
   entry: StackFrame,
   movesByType: Map<string, Move<TState>>,
   game: Game<TState, TView>,
   players: readonly Player<TView>[],
-  initialState: TState,
+  state: TState,
   history: AppliedMove[],
   rng: Rng,
   actingPlayerId: PlayerId | undefined,
-): Promise<{ state: TState; forceAdvance: boolean }> {
-  let s = initialState;
+  sequenceInfo?: SequenceInfo,
+): Promise<{ forceAdvance: boolean }> {
   let forceAdvance = false;
   const advanceTurn = () => {
     forceAdvance = true;
+  };
+
+  // Moves queued via ctx.triggerMove() during the current apply call.
+  // Cleared after each apply and its depth-first subtree settles.
+  const pendingTriggers: StackFrame[] = [];
+
+  const triggerMove = (type: string, params?: Readonly<Record<string, MoveParamValue>>): void => {
+    pendingTriggers.push({ type, params: params ?? {}, triggeredBy: undefined });
+  };
+
+  const getSequence = (type?: string): SequenceInfo | undefined => {
+    if (!sequenceInfo) return undefined;
+    if (type !== undefined && sequenceInfo.type !== type) return undefined;
+    return sequenceInfo;
   };
 
   const stack: StackFrame[] = [entry];
@@ -277,29 +295,32 @@ async function processChain<TState, TView extends PlayerView>(
     // `PlayerMoveContext` (required actingPlayerId); game-moves get the
     // base `MoveContext` (no actingPlayerId — game-moves act on the
     // state, optionally with a playerId passed via params).
-    let out: MoveResult<TState>;
     if (move.kind === "player") {
       if (actingPlayerId === undefined) {
         // Engine invariant: player-moves only run inside a player turn
         // sequence, so actingPlayerId is always set here.
         throw new Error(`Cannot run player-move "${frame.type}" outside a player turn`);
       }
-      const ctx: PlayerMoveContext =
-        frame.triggeredBy !== undefined
-          ? { actingPlayerId, triggeredBy: frame.triggeredBy, rng, advanceTurn }
-          : { actingPlayerId, rng, advanceTurn };
-      out = move.apply(s, frame.params, ctx);
+      const ctx: PlayerMoveContext = {
+        actingPlayerId,
+        ...(frame.triggeredBy !== undefined ? { triggeredBy: frame.triggeredBy } : {}),
+        rng,
+        advanceTurn,
+        triggerMove,
+        getSequence,
+      };
+      move.apply(state, frame.params, ctx);
     } else {
-      const ctx: MoveContext =
-        frame.triggeredBy !== undefined
-          ? { triggeredBy: frame.triggeredBy, rng, advanceTurn }
-          : { rng, advanceTurn };
-      out = move.apply(s, frame.params, ctx);
+      const ctx: MoveContext = {
+        ...(frame.triggeredBy !== undefined ? { triggeredBy: frame.triggeredBy } : {}),
+        rng,
+        advanceTurn,
+        triggerMove,
+        getSequence,
+      };
+      move.apply(state, frame.params, ctx);
     }
-    s = out.state;
 
-    // `playerId` on AppliedMove records who was on turn (if anyone).
-    // Undefined for engine-driven moves outside any player turn.
     const applied: AppliedMove = {
       type: frame.type,
       params: frame.params,
@@ -309,22 +330,21 @@ async function processChain<TState, TView extends PlayerView>(
     history.push(applied);
 
     for (const p of players) {
-      await p.onMoveApplied?.(game.viewFor(s, p.id), applied);
+      await p.onMoveApplied?.(game.viewFor(state, p.id), applied);
     }
 
-    if (out.triggers && out.triggers.length > 0) {
-      for (let i = out.triggers.length - 1; i >= 0; i--) {
-        const t = out.triggers[i] as TriggeredMove;
-        stack.push({
-          type: t.type,
-          params: t.params ?? {},
-          triggeredBy: frame.type,
-        });
+    // Push any triggers queued during this apply onto the stack in
+    // reverse order so they run depth-first, left-to-right.
+    if (pendingTriggers.length > 0) {
+      for (let i = pendingTriggers.length - 1; i >= 0; i--) {
+        const t = pendingTriggers[i] as StackFrame;
+        stack.push({ ...t, triggeredBy: frame.type });
       }
+      pendingTriggers.length = 0;
     }
   }
 
-  return { state: s, forceAdvance };
+  return { forceAdvance };
 }
 
 function toOption(type: string, offer: PlayerMoveOffer): MoveOption {

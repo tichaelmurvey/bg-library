@@ -20,6 +20,7 @@
 // the turn; no explicit `advance-turn` move is needed.
 
 import {
+    type CardContainer,
     Deck,
     type Game,
     type GameMove,
@@ -32,7 +33,6 @@ import {
     type RankName,
     type SequenceNode,
     type StandardPlayingCard,
-    type TriggeredMove,
     mulberry32,
     randomBot,
     rankFromName,
@@ -46,6 +46,7 @@ type Rank = number; // 1..13 (Ace..King)
 
 export interface GoFishState {
     readonly deck: Deck<StandardPlayingCard>;
+    readonly discard: Deck<StandardPlayingCard>
     /**
      * The seated players in turn order. Each player has its hand attached
      * as `player.hand` (and every hand has `hand.player` set as the
@@ -53,7 +54,7 @@ export interface GoFishState {
      */
     readonly players: readonly Player<GoFishView>[];
     readonly hands: readonly Hand<StandardPlayingCard>[];
-    readonly books: Readonly<Record<PlayerId, readonly Rank[]>>;
+    readonly books: Record<PlayerId, Rank[]>;
 }
 
 export interface GoFishView extends PlayerView {
@@ -76,52 +77,18 @@ function handFor(
     return s.hands.find((h) => h.ownerId === id);
 }
 
-/**
- * Narrow an optional `actingPlayerId` to a defined `PlayerId`. Used
- * inside move applies that are always invoked under a player turn (so
- * `ctx.actingPlayerId` is always defined in practice, but the type is
- * `string | undefined` because engine-driven moves can set it to
- * undefined).
- */
-function requireActingPlayer(id: PlayerId | undefined): PlayerId {
-    if (id === undefined) {
-        throw new Error("Move requires an acting player but none was set");
-    }
-    return id;
-}
-
 function takeAllOfRank(
-    hand: Hand<StandardPlayingCard>,
+    source: Hand<StandardPlayingCard>,
     rank: Rank,
-): StandardPlayingCard[] {
-    const taken: StandardPlayingCard[] = [];
+    destination: CardContainer<StandardPlayingCard>,
+): number {
+    let count = 0;
     for (; ;) {
-        const card = hand.remove((c) => c.rankOf() === rank);
+        const card = source.move((c) => c.rankOf() === rank, destination);
         if (!card) break;
-        taken.push(card);
+        count++;
     }
-    return taken;
-}
-
-/**
- * Move any 4-of-a-kind from `hand` into `books[player]`, returning the
- * (possibly new) books record. Mutates the hand in place; never mutates
- * the input `books`. Returns the same `books` reference if nothing
- * changed, so callers can short-circuit cheaply.
- */
-function commitBooksInHand(
-    player: PlayerId,
-    hand: Hand<StandardPlayingCard>,
-    books: Readonly<Record<PlayerId, readonly Rank[]>>,
-): Readonly<Record<PlayerId, readonly Rank[]>> {
-    let next = books;
-    for (const [rank, count] of hand.count("rank")) {
-        if (count >= 4) {
-            takeAllOfRank(hand, rank);
-            next = { ...next, [player]: [...(next[player] ?? []), rank] };
-        }
-    }
-    return next;
+    return count;
 }
 
 // --- Moves --------------------------------------------------------------
@@ -147,20 +114,16 @@ function commitBooksInHand(
 const initialDealMove: GameMove<GoFishState> = {
     kind: "game",
     type: "initial-deal",
-    apply(s) {
+    apply(s, _params, ctx) {
         const handSize = STARTING_HAND_SIZE[s.players.length];
         if (handSize === undefined) {
             throw new RangeError(`Go Fish supports 2–5 players, got ${s.players.length}`);
         }
         s.deck.shuffle();
         s.deck.deal(s.hands, handSize);
-        return {
-            state: s,
-            triggers: s.hands.map((h) => ({
-                type: "commit-books",
-                params: { playerId: h.ownerId },
-            })),
-        };
+        for (const h of s.hands) {
+            ctx.triggerMove("commit-books", { playerId: h.ownerId! });
+        }
     },
 };
 
@@ -171,8 +134,8 @@ const askMove: PlayerMove<GoFishState> = {
         const hand = handFor(s, playerId);
         if (!hand || hand.size === 0) return null;
         const opponents = s.hands
-            .filter((h) => h.ownerId !== playerId && h.size > 0)
-            .map((h) => h.ownerId);
+            .filter((h) => h.ownerId !== undefined && h.ownerId !== playerId && h.size > 0)
+            .map((h) => h.ownerId!);
         if (opponents.length === 0) return null;
         return {
             label: "Ask another player for a rank",
@@ -200,19 +163,16 @@ const askMove: PlayerMove<GoFishState> = {
         if (!asker) throw new Error(`No hand for asker "${askerId}"`);
         if (!targetHand) throw new Error(`No hand for target "${target}"`);
 
-        const taken = takeAllOfRank(targetHand, rank);
-        if (taken.length > 0) {
+        const count = takeAllOfRank(targetHand, rank, asker);
+        if (count > 0) {
             // Catch — the asker keeps the turn. `commit-books` will fold
             // any 4-of-a-kind into their books pile.
-            asker.add(taken);
-            return { state: s, triggers: [{ type: "commit-books" }] };
+            ctx.triggerMove("commit-books", { playerId: askerId });
+        } else {
+            // Miss — "go fish". The game-move decides whether the asker
+            // keeps the turn (drew matching rank) or it passes.
+            ctx.triggerMove("go-fish", { playerId: askerId, askedRank: rank });
         }
-        // Miss — "go fish". The game-move decides whether the asker
-        // keeps the turn (drew matching rank) or it passes.
-        return {
-            state: s,
-            triggers: [{ type: "go-fish", params: { askedRank: rank } }],
-        };
     },
 };
 
@@ -237,17 +197,17 @@ const fishMove: PlayerMove<GoFishState> = {
         if (s.deck.size === 0) {
             // Degenerate: deck emptied between offer and apply. Pass.
             ctx.advanceTurn();
-            return { state: s };
+            return;
         }
         const [drawn] = s.deck.draw(1);
         if (!drawn) {
             ctx.advanceTurn();
-            return { state: s };
+            return;
         }
         hand.add(drawn);
         // Drawing because of an empty hand / no opponents is the *start*
         // of the turn, not its end — don't advance.
-        return { state: s, triggers: [{ type: "commit-books" }] };
+        ctx.triggerMove("commit-books", { playerId: ctx.actingPlayerId });
     },
 };
 
@@ -255,25 +215,24 @@ const goFishMove: GameMove<GoFishState> = {
     kind: "game",
     type: "go-fish",
     apply(s, params, ctx) {
-        const askerId = requireActingPlayer(ctx.actingPlayerId);
+        const playerId = params.playerId as PlayerId;
         const askedRank = params.askedRank as Rank;
-        const hand = handFor(s, askerId);
-        if (!hand) throw new Error(`No hand for "${askerId}"`);
+        const hand = handFor(s, playerId);
+        if (!hand) throw new Error(`No hand for "${playerId}"`);
         if (s.deck.size === 0) {
             // Nothing to draw — the ask itself counts as the turn.
             ctx.advanceTurn();
-            return { state: s };
+            return;
         }
         const [drawn] = s.deck.draw(1);
         if (!drawn) {
             ctx.advanceTurn();
-            return { state: s };
+            return;
         }
         hand.add(drawn);
-        const triggers: TriggeredMove[] = [{ type: "commit-books" }];
         // A "matching draw" is itself a catch — the asker keeps the turn.
         if (drawn.rankOf() !== askedRank) ctx.advanceTurn();
-        return { state: s, triggers };
+        ctx.triggerMove("commit-books", { playerId });
     },
 };
 
@@ -281,15 +240,22 @@ const commitBooksMove: GameMove<GoFishState> = {
     kind: "game",
     type: "commit-books",
     apply(s, params, ctx) {
-        // Player can be supplied explicitly (engine triggers, like
-        // `initial-deal` checking each hand) or default to whoever is
-        // on turn (the common in-game case).
         const playerId =
-            (params.playerId as PlayerId | undefined) ?? requireActingPlayer(ctx.actingPlayerId);
+            (params.playerId as PlayerId | undefined) ??
+            ctx.getSequence()?.currentPlayer?.id;
+        if (!playerId) return;
         const hand = handFor(s, playerId);
-        if (!hand) return { state: s };
-        const next = commitBooksInHand(playerId, hand, s.books);
-        return next === s.books ? { state: s } : { state: { ...s, books: next } };
+        if (!hand) return;
+        const discard = s.deck.discardPile;
+        if (!discard) return;
+        for (const [rank, count] of hand.count("rank")) {
+            if (count >= 4) {
+                takeAllOfRank(hand, rank, discard);
+                const existing = s.books[playerId];
+                if (existing) existing.push(rank);
+                else s.books[playerId] = [rank];
+            }
+        }
     },
 };
 
@@ -301,7 +267,10 @@ export const goFishGame: Game<GoFishState, GoFishView> = {
             throw new RangeError(`Go Fish supports 2–5 players, got ${players.length}`);
         }
 
-        const deck = standardPlayingDeck(rng);
+        const deck = standardPlayingDeck(rng.fork());
+        const discard = new Deck<StandardPlayingCard>([], rng.fork());
+
+        deck.setDiscardPile(discard);
 
         // Build each player's hand and wire the cross-references in both
         // directions: hand.player → player, player.hand → hand. The
@@ -309,20 +278,20 @@ export const goFishGame: Game<GoFishState, GoFishView> = {
         // `gameSequence`) shuffles and deals.
         const hands: Hand<StandardPlayingCard>[] = [];
         for (const p of players) {
-            const h = new Hand<StandardPlayingCard>(p.id, rng, [], {
+            const h = new Hand<StandardPlayingCard>(rng, [], {
                 player: p,
-                isPrivate: true,
             });
             p.hand = h;
             hands.push(h);
         }
 
-        const books: Readonly<Record<PlayerId, readonly Rank[]>> = Object.fromEntries(
-            players.map((p) => [p.id, [] as readonly Rank[]]),
+        const books: Record<PlayerId, Rank[]> = Object.fromEntries(
+            players.map((p) => [p.id, [] as Rank[]]),
         );
 
         return {
-            deck: deck,
+            deck,
+            discard,
             players: players.slice(),
             hands,
             books,
@@ -381,7 +350,7 @@ export const goFishGame: Game<GoFishState, GoFishView> = {
         const myHand = handFor(s, viewerId)?.reveal() ?? [];
         const opponentHandSizes: Record<PlayerId, number> = {};
         for (const h of s.hands) {
-            if (h.ownerId !== viewerId) opponentHandSizes[h.ownerId] = h.size;
+            if (h.ownerId !== undefined && h.ownerId !== viewerId) opponentHandSizes[h.ownerId] = h.size;
         }
         return {
             viewer: viewerId,

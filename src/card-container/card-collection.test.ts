@@ -15,10 +15,12 @@ const stubContainer = <T>(): CardContainer<T> & { received: T[] } => {
       else received.push(card as T);
     },
     contains: (p) => received.some(p),
-    remove: (p) => {
+    move: (p, dest) => {
       const i = received.findIndex(p);
       if (i === -1) return undefined;
-      return received.splice(i, 1)[0];
+      const [card] = received.splice(i, 1);
+      dest.add(card);
+      return card;
     },
     shuffle: () => {},
   };
@@ -58,16 +60,20 @@ describe("CardCollection", () => {
     expect(c.contains((x) => x === 99)).toBe(false);
   });
 
-  it("remove pulls the first matching item", () => {
+  it("move transfers the first matching item to the destination", () => {
     const c = make<number>([1, 2, 3, 2]);
-    expect(c.remove((x) => x === 2)).toBe(2);
+    const dest = stubContainer<number>();
+    expect(c.move((x) => x === 2, dest)).toBe(2);
     expect(c.snapshot()).toEqual([1, 3, 2]);
+    expect(dest.received).toEqual([2]);
   });
 
-  it("remove returns undefined when nothing matches", () => {
+  it("move returns undefined when nothing matches", () => {
     const c = make<number>([1, 2]);
-    expect(c.remove((x) => x === 99)).toBeUndefined();
+    const dest = stubContainer<number>();
+    expect(c.move((x) => x === 99, dest)).toBeUndefined();
     expect(c.size).toBe(2);
+    expect(dest.received).toEqual([]);
   });
 
   it("shuffle is deterministic for same seed", () => {

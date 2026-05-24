@@ -4,7 +4,10 @@ import type { AttrKey, AttrValue } from "../card/card.js";
  * The shared surface of any object that holds a collection of cards —
  * currently `Deck` and `Hand`. The interface covers the operations that
  * make sense uniformly across both: counting, adding, querying by
- * predicate, removing by predicate, and shuffling.
+ * predicate, moving between containers, and shuffling.
+ *
+ * Cards are persistent and cannot be destroyed — the `move` method
+ * requires a destination container.
  *
  * Operations specific to one container (drawing, discarding, per-viewer
  * visibility) live on the concrete classes, not here.
@@ -13,8 +16,12 @@ export interface CardContainer<TCard> {
   readonly size: number;
   add(card: TCard | readonly TCard[]): void;
   contains(predicate: (card: TCard) => boolean): boolean;
-  /** Remove and return the first card matching the predicate, or undefined. */
-  remove(predicate: (card: TCard) => boolean): TCard | undefined;
+  /**
+   * Find the first card matching the predicate, remove it from this
+   * container, and add it to `destination`. Returns the moved card, or
+   * `undefined` if no card matched.
+   */
+  move(predicate: (card: TCard) => boolean, destination: CardContainer<TCard>): TCard | undefined;
   /** Randomize internal order using the container's own `Rng`. */
   shuffle(): void;
   /**

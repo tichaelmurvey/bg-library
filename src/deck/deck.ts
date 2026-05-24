@@ -159,9 +159,12 @@ export class Deck<TCard> implements CardContainer<TCard> {
     return this.drawPile.contains(predicate);
   }
 
-  /** Remove the first matching card from the draw pile. Does not search the discard pile. */
-  remove(predicate: (card: TCard) => boolean): TCard | undefined {
-    return this.drawPile.remove(predicate);
+  /**
+   * Find the first matching card in the draw pile, remove it, and add it
+   * to `destination`. Does not search the discard pile.
+   */
+  move(predicate: (card: TCard) => boolean, destination: CardContainer<TCard>): TCard | undefined {
+    return this.drawPile.move(predicate, destination);
   }
 
   /**

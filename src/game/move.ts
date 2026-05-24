@@ -11,37 +11,37 @@ export type ParamKind = "binary" | "number-range" | "named-options" | "string";
 
 /** A two-way choice. Response value is a boolean. Labels are display-only. */
 export interface BinaryParam {
-    readonly name: string;
-    readonly kind: "binary";
-    /** Label shown for the `true` value (e.g. "forward"). Optional. */
-    readonly trueLabel?: string;
-    /** Label shown for the `false` value (e.g. "back"). Optional. */
-    readonly falseLabel?: string;
+  readonly name: string;
+  readonly kind: "binary";
+  /** Label shown for the `true` value (e.g. "forward"). Optional. */
+  readonly trueLabel?: string;
+  /** Label shown for the `false` value (e.g. "back"). Optional. */
+  readonly falseLabel?: string;
 }
 
 /** Integer (or stepped) range, inclusive of both bounds. Response is a number. */
 export interface NumberRangeParam {
-    readonly name: string;
-    readonly kind: "number-range";
-    readonly min: number;
-    readonly max: number;
-    /** Step between allowed values. Defaults to 1. Must be > 0. */
-    readonly step?: number;
+  readonly name: string;
+  readonly kind: "number-range";
+  readonly min: number;
+  readonly max: number;
+  /** Step between allowed values. Defaults to 1. Must be > 0. */
+  readonly step?: number;
 }
 
 /** Pick one of a fixed list of string options. Response is one of `options`. */
 export interface NamedOptionsParam {
-    readonly name: string;
-    readonly kind: "named-options";
-    readonly options: readonly string[];
+  readonly name: string;
+  readonly kind: "named-options";
+  readonly options: readonly string[];
 }
 
 /** Free text with bounds. Response is a string. */
 export interface StringParam {
-    readonly name: string;
-    readonly kind: "string";
-    readonly maxLength: number;
-    readonly minLength?: number;
+  readonly name: string;
+  readonly kind: "string";
+  readonly maxLength: number;
+  readonly minLength?: number;
 }
 
 /** Discriminated union of every supported param kind. */
@@ -49,14 +49,14 @@ export type MoveParam = BinaryParam | NumberRangeParam | NamedOptionsParam | Str
 
 /** The response value matching a given param kind. */
 export type ParamValueFor<P extends MoveParam> = P extends BinaryParam
-    ? boolean
-    : P extends NumberRangeParam
+  ? boolean
+  : P extends NumberRangeParam
     ? number
     : P extends NamedOptionsParam
-    ? string
-    : P extends StringParam
-    ? string
-    : never;
+      ? string
+      : P extends StringParam
+        ? string
+        : never;
 
 /** Any valid param response value. */
 export type MoveParamValue = boolean | number | string;
@@ -65,133 +65,133 @@ export type MoveParamValue = boolean | number | string;
 
 /** One move type the player may choose (e.g. "draw", "play", "pass"). */
 export interface MoveOption {
-    /** Stable identifier for this move type. Unique within an offering. */
-    readonly type: string;
-    /** Optional human-readable label. */
-    readonly label?: string;
-    /** Zero or more parameters. Each `name` must be unique within this option. */
-    readonly params: readonly MoveParam[];
+  /** Stable identifier for this move type. Unique within an offering. */
+  readonly type: string;
+  /** Optional human-readable label. */
+  readonly label?: string;
+  /** Zero or more parameters. Each `name` must be unique within this option. */
+  readonly params: readonly MoveParam[];
 }
 
 /** The complete set of moves a player may make on their turn. */
 export interface MoveOffering {
-    readonly options: readonly MoveOption[];
+  readonly options: readonly MoveOption[];
 }
 
 // --- Response -----------------------------------------------------------
 
 /** What a player returns from `decide()`. */
 export interface MoveResponse {
-    /** Must match a `MoveOption.type` in the offering. */
-    readonly type: string;
-    /** Keyed by param name. Each value's runtime type must match the param's kind. */
-    readonly params: Readonly<Record<string, MoveParamValue>>;
+  /** Must match a `MoveOption.type` in the offering. */
+  readonly type: string;
+  /** Keyed by param name. Each value's runtime type must match the param's kind. */
+  readonly params: Readonly<Record<string, MoveParamValue>>;
 }
 
 // --- Validation ---------------------------------------------------------
 
 export type ValidationResult =
-    | { readonly ok: true }
-    | { readonly ok: false; readonly reason: string };
+  | { readonly ok: true }
+  | { readonly ok: false; readonly reason: string };
 
 /**
  * Validate a player's response against the offering. Returns a structured
  * result rather than throwing so callers can choose how to surface failure.
  */
 export function validateMoveResponse(
-    offering: MoveOffering,
-    response: MoveResponse,
+  offering: MoveOffering,
+  response: MoveResponse,
 ): ValidationResult {
-    const option = offering.options.find((o) => o.type === response.type);
-    if (!option) {
-        return { ok: false, reason: `Unknown move type: "${response.type}"` };
-    }
+  const option = offering.options.find((o) => o.type === response.type);
+  if (!option) {
+    return { ok: false, reason: `Unknown move type: "${response.type}"` };
+  }
 
-    const expectedNames = new Set(option.params.map((p) => p.name));
-    for (const key of Object.keys(response.params)) {
-        if (!expectedNames.has(key)) {
-            return { ok: false, reason: `Unexpected param "${key}" for move "${response.type}"` };
-        }
+  const expectedNames = new Set(option.params.map((p) => p.name));
+  for (const key of Object.keys(response.params)) {
+    if (!expectedNames.has(key)) {
+      return { ok: false, reason: `Unexpected param "${key}" for move "${response.type}"` };
     }
+  }
 
-    for (const param of option.params) {
-        const value = response.params[param.name];
-        if (value === undefined) {
-            return { ok: false, reason: `Missing param "${param.name}" for move "${response.type}"` };
-        }
-        const paramCheck = validateParamValue(param, value);
-        if (!paramCheck.ok) return paramCheck;
+  for (const param of option.params) {
+    const value = response.params[param.name];
+    if (value === undefined) {
+      return { ok: false, reason: `Missing param "${param.name}" for move "${response.type}"` };
     }
+    const paramCheck = validateParamValue(param, value);
+    if (!paramCheck.ok) return paramCheck;
+  }
 
-    return { ok: true };
+  return { ok: true };
 }
 
 function validateParamValue(param: MoveParam, value: MoveParamValue): ValidationResult {
-    switch (param.kind) {
-        case "binary":
-            if (typeof value !== "boolean") {
-                return { ok: false, reason: `Param "${param.name}" expects boolean, got ${typeof value}` };
-            }
-            return { ok: true };
-        case "number-range": {
-            if (typeof value !== "number" || !Number.isFinite(value)) {
-                return {
-                    ok: false,
-                    reason: `Param "${param.name}" expects finite number, got ${typeof value}`,
-                };
-            }
-            if (value < param.min || value > param.max) {
-                return {
-                    ok: false,
-                    reason: `Param "${param.name}" value ${value} outside [${param.min}, ${param.max}]`,
-                };
-            }
-            const step = param.step ?? 1;
-            if (step <= 0) {
-                return { ok: false, reason: `Param "${param.name}" has invalid step ${step}` };
-            }
-            const offset = value - param.min;
-            // Float-tolerant step check.
-            const remainder = Math.abs(offset / step - Math.round(offset / step));
-            if (remainder > 1e-9) {
-                return {
-                    ok: false,
-                    reason: `Param "${param.name}" value ${value} not aligned to step ${step} from ${param.min}`,
-                };
-            }
-            return { ok: true };
-        }
-        case "named-options":
-            if (typeof value !== "string") {
-                return { ok: false, reason: `Param "${param.name}" expects string, got ${typeof value}` };
-            }
-            if (!param.options.includes(value)) {
-                return {
-                    ok: false,
-                    reason: `Param "${param.name}" value "${value}" not in [${param.options.join(", ")}]`,
-                };
-            }
-            return { ok: true };
-        case "string": {
-            if (typeof value !== "string") {
-                return { ok: false, reason: `Param "${param.name}" expects string, got ${typeof value}` };
-            }
-            const min = param.minLength ?? 0;
-            if (value.length < min) {
-                return {
-                    ok: false,
-                    reason: `Param "${param.name}" length ${value.length} below min ${min}`,
-                };
-            }
-            if (value.length > param.maxLength) {
-                return {
-                    ok: false,
-                    reason: `Param "${param.name}" length ${value.length} exceeds max ${param.maxLength}`,
-                };
-            }
-            return { ok: true };
-        }
+  switch (param.kind) {
+    case "binary":
+      if (typeof value !== "boolean") {
+        return { ok: false, reason: `Param "${param.name}" expects boolean, got ${typeof value}` };
+      }
+      return { ok: true };
+    case "number-range": {
+      if (typeof value !== "number" || !Number.isFinite(value)) {
+        return {
+          ok: false,
+          reason: `Param "${param.name}" expects finite number, got ${typeof value}`,
+        };
+      }
+      if (value < param.min || value > param.max) {
+        return {
+          ok: false,
+          reason: `Param "${param.name}" value ${value} outside [${param.min}, ${param.max}]`,
+        };
+      }
+      const step = param.step ?? 1;
+      if (step <= 0) {
+        return { ok: false, reason: `Param "${param.name}" has invalid step ${step}` };
+      }
+      const offset = value - param.min;
+      // Float-tolerant step check.
+      const remainder = Math.abs(offset / step - Math.round(offset / step));
+      if (remainder > 1e-9) {
+        return {
+          ok: false,
+          reason: `Param "${param.name}" value ${value} not aligned to step ${step} from ${param.min}`,
+        };
+      }
+      return { ok: true };
     }
+    case "named-options":
+      if (typeof value !== "string") {
+        return { ok: false, reason: `Param "${param.name}" expects string, got ${typeof value}` };
+      }
+      if (!param.options.includes(value)) {
+        return {
+          ok: false,
+          reason: `Param "${param.name}" value "${value}" not in [${param.options.join(", ")}]`,
+        };
+      }
+      return { ok: true };
+    case "string": {
+      if (typeof value !== "string") {
+        return { ok: false, reason: `Param "${param.name}" expects string, got ${typeof value}` };
+      }
+      const min = param.minLength ?? 0;
+      if (value.length < min) {
+        return {
+          ok: false,
+          reason: `Param "${param.name}" length ${value.length} below min ${min}`,
+        };
+      }
+      if (value.length > param.maxLength) {
+        return {
+          ok: false,
+          reason: `Param "${param.name}" length ${value.length} exceeds max ${param.maxLength}`,
+        };
+      }
+      return { ok: true };
+    }
+  }
 }
 
 // --- View ---------------------------------------------------------------
@@ -212,110 +212,128 @@ export type PlayerView = Readonly<Record<string, unknown>>;
 //     never offered to players. Useful for follow-up steps like "draw
 //     from stock", "commit any books", "advance turn".
 //
-// Either kind's `apply` returns a `MoveResult` carrying the next state
-// and an optional list of triggered moves. Triggered moves are looked
-// up by `type` and processed depth-first before the loop yields back to
-// the next player turn.
+// Either kind's `apply` mutates state in place and calls
+// `ctx.triggerMove()` to queue follow-up moves. Triggered moves are
+// looked up by `type` and processed depth-first before the loop yields
+// back to the next player turn.
 
 import type { PlayerId } from "../hand/hand.js";
 import type { Rng } from "../rng/rng.js";
 
-/** A reference to another move plus the params it should receive. */
-export interface TriggeredMove {
-    readonly type: string;
-    readonly params?: Readonly<Record<string, MoveParamValue>>;
+// --- Sequence info -------------------------------------------------------
+// The engine tracks which game-sequence node is currently executing.
+// `getSequence` on the context lets moves inspect the enclosing sequence.
+
+/**
+ * Info about the currently-enclosing `player_turn_sequence`.
+ * Available whether the current move is a player-chosen move
+ * or a triggered game-move running inside that sequence.
+ */
+export interface PlayerTurnSequenceInfo {
+  readonly type: "player_turn_sequence";
+  /** The player whose turn it is in this sequence. */
+  readonly currentPlayer: { readonly id: PlayerId };
 }
 
-/** Return shape for every `Move.apply`. */
-export interface MoveResult<TState> {
-    readonly state: TState;
-    /** Moves to run after this one, depth-first. Looked up by `type`. */
-    readonly triggers?: readonly TriggeredMove[];
-}
+/** Discriminated union over all sequence-node types. */
+export type SequenceInfo = PlayerTurnSequenceInfo;
 
-/** Context passed to every `apply`. */
+/** Context passed to every `apply`. Game-moves see only this. */
 export interface MoveContext {
-    /**
-     * The player whose turn this move belongs to. Set on every move run
-     * inside a `player_turn_sequence` (both player-chosen and triggered).
-     * Undefined for moves run as standalone entries in `gameSequence`
-     * (e.g. an `initial-deal` setup move).
-     */
-    readonly actingPlayerId?: PlayerId;
-    /** The move type that triggered this one. Undefined for the entrypoint move. */
-    readonly triggeredBy?: string;
-    readonly rng: Rng;
-    /**
-     * Force the enclosing `player_turn_sequence` to advance to the next
-     * player after the current chain settles. Without this call, the
-     * sequence's default is: re-prompt the same player as long as they
-     * still have offerable moves, otherwise advance.
-     *
-     * No-op outside a `player_turn_sequence` (e.g. inside a standalone
-     * engine move) — there's no cursor to advance.
-     */
-    advanceTurn(): void;
+  /** The move type that triggered this one. Undefined for the entrypoint move. */
+  readonly triggeredBy?: string;
+  readonly rng: Rng;
+  /**
+   * Force the enclosing `player_turn_sequence` to advance to the next
+   * player after the current chain settles. Without this call, the
+   * sequence's default is: re-prompt the same player as long as they
+   * still have offerable moves, otherwise advance.
+   *
+   * No-op outside a `player_turn_sequence` (e.g. inside a standalone
+   * engine move) — there's no cursor to advance.
+   */
+  advanceTurn(): void;
+  /**
+   * Queue a move to run after this one, depth-first. The move is looked
+   * up by `type` in the global move catalog (which collects from every
+   * node in `gameSequence`). Only game-moves can be triggered.
+   * Multiple calls queue multiple moves; they run depth-first in the
+   * order they were queued.
+   */
+  triggerMove(type: string, params?: Readonly<Record<string, MoveParamValue>>): void;
+  /**
+   * Look up the nearest enclosing sequence of the given `type`.
+   * Returns `undefined` if no such sequence is active (e.g. calling
+   * `getSequence("player_turn_sequence")` from an inline engine move).
+   *
+   * When called without a `type`, returns the closest/deepest sequence
+   * regardless of its type.
+   */
+  getSequence(type?: string): SequenceInfo | undefined;
 }
 
 /**
- * Narrowed `MoveContext` for `PlayerMove.apply`: `actingPlayerId` is
- * guaranteed by the engine to be defined (a player-move only ever
- * runs when there's a current player). Game-move authors keep the
- * looser `MoveContext` because game-moves can run in engine chains
- * where no player is on turn.
+ * Extended context for `PlayerMove.apply`: `actingPlayerId` is guaranteed
+ * by the engine to be defined (a player-move only ever runs when there's
+ * a current player). Game-moves never see this — if they need to act on
+ * a specific player, the triggering move passes the player id as a param.
  */
-export interface PlayerMoveContext extends Omit<MoveContext, "actingPlayerId"> {
-    readonly actingPlayerId: PlayerId;
+export interface PlayerMoveContext extends MoveContext {
+  readonly actingPlayerId: PlayerId;
 }
 
 /** What a `PlayerMove.offer` returns when the move is currently legal. */
 export interface PlayerMoveOffer {
-    readonly label?: string;
-    readonly params: readonly MoveParam[];
+  readonly label?: string;
+  readonly params: readonly MoveParam[];
 }
 
 export interface PlayerMove<TState> {
-    readonly kind: "player";
-    readonly type: string;
-    /**
-     * Build this move's option for the offering given the current state and
-     * the player on turn. Return `null` if the move is not currently legal —
-     * it will be omitted from the offering.
-     */
-    offer(state: TState, playerId: PlayerId): PlayerMoveOffer | null;
-    /**
-     * Apply the move with the params the player chose. Return the new state
-     * and any follow-up `triggers`. `ctx.actingPlayerId` is always set —
-     * the engine only invokes player-moves when a player is on turn.
-     */
-    apply(
-        state: TState,
-        params: Readonly<Record<string, MoveParamValue>>,
-        ctx: PlayerMoveContext,
-    ): MoveResult<TState>;
+  readonly kind: "player";
+  readonly type: string;
+  /**
+   * Build this move's option for the offering given the current state and
+   * the player on turn. Return `null` if the move is not currently legal —
+   * it will be omitted from the offering.
+   */
+  offer(state: TState, playerId: PlayerId): PlayerMoveOffer | null;
+  /**
+   * Apply the move with the params the player chose. Mutates state in
+   * place. Use `ctx.triggerMove()` to queue follow-up moves (depth-first).
+   * `ctx.actingPlayerId` is always set — the engine only invokes
+   * player-moves when a player is on turn.
+   */
+  apply(
+    state: TState,
+    params: Readonly<Record<string, MoveParamValue>>,
+    ctx: PlayerMoveContext,
+  ): void;
 }
 
 export interface GameMove<TState> {
-    readonly kind: "game";
-    readonly type: string;
-    /** Apply this triggered move with the params the trigger supplied. */
-    apply(
-        state: TState,
-        params: Readonly<Record<string, MoveParamValue>>,
-        ctx: MoveContext,
-    ): MoveResult<TState>;
+  readonly kind: "game";
+  readonly type: string;
+  /**
+   * Apply this triggered move with the params the trigger supplied.
+   * Mutates state in place. Use `ctx.triggerMove()` to queue
+   * follow-up moves (depth-first).
+   */
+  apply(state: TState, params: Readonly<Record<string, MoveParamValue>>, ctx: MoveContext): void;
 }
 
 export type Move<TState> = PlayerMove<TState> | GameMove<TState>;
 
 /** A move recorded in `GameRunResult.history` — player or triggered. */
 export interface AppliedMove {
-    readonly type: string;
-    readonly params: Readonly<Record<string, MoveParamValue>>;
-    /** Who was on turn when this move was applied. */
-    readonly playerId: PlayerId;
-    /** For game-triggered moves: the move type that triggered this one. Absent on the player-chosen move. */
-    readonly triggeredBy?: string;
+  readonly type: string;
+  readonly params: Readonly<Record<string, MoveParamValue>>;
+  /**
+   * Who was on turn when this move was applied.
+   * Undefined for engine-driven moves outside any player turn.
+   */
+  readonly playerId?: PlayerId;
+  /** For game-triggered moves: the move type that triggered this one. Absent on the player-chosen move. */
+  readonly triggeredBy?: string;
 }
 
 // --- Game sequence ------------------------------------------------------
@@ -339,8 +357,8 @@ export interface AppliedMove {
  * (no one can move) or when `Game.isTerminal` returns true.
  */
 export interface PlayerTurnSequence<TState> {
-    readonly type: "player_turn_sequence";
-    readonly moves: readonly Move<TState>[];
+  readonly type: "player_turn_sequence";
+  readonly moves: readonly Move<TState>[];
 }
 
 /**

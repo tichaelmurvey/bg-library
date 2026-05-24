@@ -72,17 +72,20 @@ describe("Deck", () => {
     expect(deck.contains((c) => c === 99)).toBe(false);
   });
 
-  it("remove pulls the first matching card from the draw pile", () => {
+  it("move transfers the first matching card from the draw pile to the destination", () => {
     const deck = makeDeck();
-    const removed = deck.remove((c) => c === 3);
-    expect(removed).toBe(3);
+    const dest = new Deck<number>([], mulberry32(1));
+    const moved = deck.move((c) => c === 3, dest);
+    expect(moved).toBe(3);
     expect(deck.size).toBe(4);
     expect(deck.contains((c) => c === 3)).toBe(false);
+    expect(dest.contains((c) => c === 3)).toBe(true);
   });
 
-  it("remove returns undefined when nothing matches", () => {
+  it("move returns undefined when nothing matches", () => {
     const deck = makeDeck();
-    expect(deck.remove((c) => c === 99)).toBeUndefined();
+    const dest = new Deck<number>([], mulberry32(1));
+    expect(deck.move((c) => c === 99, dest)).toBeUndefined();
     expect(deck.size).toBe(5);
   });
 
@@ -155,8 +158,8 @@ describe("Deck", () => {
   });
 
   describe("deal", () => {
-    const makeHands = (ids: readonly string[]) =>
-      ids.map((id) => new Hand<number>(id, mulberry32(100)));
+    const makeHands = (_ids: readonly string[]) =>
+      _ids.map(() => new Hand<number>(mulberry32(100)));
 
     it("uses 'full-rounds' to deal only complete rounds, leaving leftovers", () => {
       const deck = new Deck<number>([1, 2, 3, 4, 5, 6, 7], mulberry32(1));
